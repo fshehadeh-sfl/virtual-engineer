@@ -14,15 +14,16 @@ const log = getLogger("review-progress");
 
 type ReviewProgressConnector = ReviewConnector | VcsConnector;
 
+function matchesExternalChangeId(recordedChangeId: string, eventChangeId: string): boolean {
+  if (recordedChangeId === eventChangeId) return true;
+  const separator = eventChangeId.lastIndexOf("#");
+  return separator > 0 && recordedChangeId === eventChangeId.slice(separator + 1);
+}
+
 export interface ReviewProgressDependencies {
   getChangesForTask(taskId: TaskId): Promise<ChangePerRepository[]>;
   transition(taskId: TaskId, state: TaskState): Promise<Task>;
-  updateChangeStatus(
-    taskId: TaskId,
-    repoKey: string,
-    status: string,
-    changeId: string
-  ): Promise<void>;
+  updateChangeStatus(taskId: TaskId, changeRowId: string, status: string): Promise<void>;
   getTask(taskId: TaskId): Promise<Task | null>;
   resolveReviewConnector(task: Pick<Task, "taskId" | "projectId" | "externalChangeId">): Promise<ReviewConnector>;
   resolveVcsConnector(
@@ -57,6 +58,61 @@ export class ReviewProgressService {
     }
 
     await this.checkSingleRepository(task, streamComments);
+  }
+
+  async markChangeMerged(
+    task: Task,
+    integrationId: string,
+    externalChangeId: string,
+    repoKey?: string
+  ): Promise<void> {
+    const changes = await this.dependencies.getChangesForTask(task.taskId);
+    if (changes.length === 0) {
+      if (task.externalChangeId !== externalChangeId) {
+        log.info(
+          { taskId: task.taskId, integrationId, externalChangeId },
+          "merged event does not match the task's legacy change id"
+        );
+        return;
+      }
+      const mergedTask = await this.dependencies.transition(task.taskId, "MERGED");
+      await this.dependencies.closeTicket(mergedTask);
+      return;
+    }
+
+    const matchingChanges = changes.filter(
+      (change) =>
+        change.integrationId === integrationId
+        && (repoKey === undefined || change.repoKey === repoKey)
+        && change.status !== "NO_CHANGE"
+        && change.status !== "ORPHANED"
+        && matchesExternalChangeId(change.changeId, externalChangeId)
+    );
+    if (matchingChanges.length !== 1) {
+      log.warn(
+        { taskId: task.taskId, integrationId, externalChangeId, matchCount: matchingChanges.length },
+        "merged event did not resolve to one active change row"
+      );
+      return;
+    }
+
+    const matchingChange = matchingChanges[0]!;
+    await this.dependencies.updateChangeStatus(task.taskId, matchingChange.id, "MERGED");
+
+    const updatedChanges = await this.dependencies.getChangesForTask(task.taskId);
+    const activeChanges = updatedChanges.filter(
+      (change) => change.status !== "NO_CHANGE" && change.status !== "ORPHANED"
+    );
+    if (activeChanges.length === 0 || !activeChanges.every((change) => change.status === "MERGED")) {
+      log.info(
+        { taskId: task.taskId, mergedChangeId: matchingChange.changeId, activeChangeCount: activeChanges.length },
+        "merged event recorded; other active changes remain"
+      );
+      return;
+    }
+
+    const mergedTask = await this.dependencies.transition(task.taskId, "MERGED");
+    await this.dependencies.closeTicket(mergedTask);
   }
 
   private async checkSingleRepository(
@@ -176,6 +232,13 @@ export class ReviewProgressService {
     const allProcessedComments: ReviewComment[] = [];
 
     for (const change of activeChanges) {
+      if (change.status === "MERGED") continue;
+      if (change.status === "ABANDONED") {
+        anyAbandoned = true;
+        abandonedRepos.push(change.repoKey);
+        continue;
+      }
+
       const changeConnector = await this.resolveChangeConnector(change, getFallbackReviewConnector);
       if (!changeConnector) {
         log.warn(
@@ -196,9 +259,8 @@ export class ReviewProgressService {
         if (currentStatus !== change.status) {
           await this.dependencies.updateChangeStatus(
             task.taskId,
-            change.repoKey,
-            currentStatus,
-            change.changeId
+            change.id,
+            currentStatus
           );
           log.info(
             { taskId: task.taskId, repoKey: change.repoKey, oldStatus: change.status, newStatus: currentStatus },

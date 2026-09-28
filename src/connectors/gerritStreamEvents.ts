@@ -607,9 +607,15 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
     }
 
     switch (eventType) {
-      case "change-merged":
-        await this.options.orchestrator.markChangeMerged(handle.integration.id, changeId);
+      case "change-merged": {
+        const project = extractChangeProject(payload);
+        if (project !== null) {
+          await this.options.orchestrator.markChangeMerged(handle.integration.id, changeId, project);
+        } else {
+          await this.options.orchestrator.markChangeMerged(handle.integration.id, changeId);
+        }
         return;
+      }
       case "change-abandoned":
         await this.options.orchestrator.markChangeAbandoned(handle.integration.id, changeId);
         return;
@@ -865,4 +871,12 @@ function extractChangeId(payload: unknown): string | null {
     }
   }
   return null;
+}
+
+function extractChangeProject(payload: unknown): string | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const change = (payload as Record<string, unknown>)["change"];
+  if (typeof change !== "object" || change === null) return null;
+  const project = (change as Record<string, unknown>)["project"];
+  return typeof project === "string" && project.length > 0 ? project : null;
 }

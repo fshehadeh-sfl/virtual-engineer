@@ -6,6 +6,7 @@ import {
   makeExternalChangeId,
   makeProjectId,
 } from "../../src/interfaces.js";
+import type { ChangePerRepository } from "../../src/domain/tasks.js";
 import type {
   StateStore,
   Task,
@@ -36,6 +37,28 @@ function makeTask(overrides: Partial<Task> = {}): Task {
   } as Task;
 }
 
+function makeChange(
+  task: Task,
+  overrides: Partial<ChangePerRepository> = {}
+): ChangePerRepository {
+  const now = new Date();
+  return {
+    id: `${task.taskId}:repo-a`,
+    taskId: task.taskId,
+    repoKey: "repo-a",
+    changeId: "Iabc",
+    reviewUrl: null,
+    status: "OPEN",
+    integrationId: "g-1",
+    reviewSystem: "gerrit",
+    commitIndex: 0,
+    subjectHash: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
 function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
   return {
     createTask: vi.fn(),
@@ -57,6 +80,7 @@ function makeStateStore(overrides: Partial<StateStore> = {}): StateStore {
     getChangesForTask: vi.fn().mockResolvedValue([]),
     saveChangePerRepository: vi.fn().mockResolvedValue(undefined),
     updateChangePerRepositoryStatus: vi.fn().mockResolvedValue(undefined),
+    updateChangePerRepositoryStatusById: vi.fn().mockResolvedValue(undefined),
     orphanExcessChanges: vi.fn().mockResolvedValue(0),
     getActiveRepoSetLock: vi.fn().mockResolvedValue(null),
     findTaskByExternalChangeId: vi.fn().mockResolvedValue(null),
@@ -83,7 +107,11 @@ function makeReview(overrides: Partial<ReviewConnector> = {}): ReviewConnector {
   } as unknown as ReviewConnector;
 }
 
-function makeOrchestrator(stateStore: StateStore, review: ReviewConnector = makeReview()): Orchestrator {
+function makeOrchestrator(
+  stateStore: StateStore,
+  review: ReviewConnector = makeReview(),
+  pushTargets: unknown[] = [{ integrationId: "gerrit-int" }]
+): Orchestrator {
   const redmine = {
     getAssignedTickets: vi.fn().mockResolvedValue([]),
     getTicket: vi.fn().mockResolvedValue(null),
@@ -110,7 +138,7 @@ function makeOrchestrator(stateStore: StateStore, review: ReviewConnector = make
     {
       projectStore: {
         getProjectById: vi.fn().mockResolvedValue(null),
-        listProjectPushTargets: vi.fn().mockResolvedValue([{ integrationId: "gerrit-int" }]),
+        listProjectPushTargets: vi.fn().mockResolvedValue(pushTargets),
         getProjectTicketSource: vi.fn().mockResolvedValue({ integrationId: "redmine-int" }),
         getProjectReviewConfig: vi.fn().mockResolvedValue(null),
         getAgentById: vi.fn().mockResolvedValue(null),
@@ -237,6 +265,82 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       expect(calls).toContain("MERGED");
       expect(calls).toContain("CLOSING");
       expect(calls).toContain("DONE");
+    });
+
+    it("does not complete a task while another tracked change remains open", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue([
+          makeChange(task),
+          makeChange(task, {
+            id: `${task.taskId}:repo-b`,
+            repoKey: "repo-b",
+            changeId: "Iother",
+          }),
+        ]),
+      });
+      const orch = makeOrchestrator(stateStore);
+
+      await orch.markChangeMerged("g-1", "Iabc");
+
+      expect(stateStore.updateChangePerRepositoryStatusById).toHaveBeenCalledWith(
+        task.taskId,
+        `${task.taskId}:repo-a`,
+        "MERGED"
+      );
+      expect(stateStore.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
+    });
+
+    it("uses the Gerrit project to select a matching repo row for a duplicate Change-Id", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue([
+          makeChange(task, { id: `${task.taskId}:repo-a`, repoKey: "repo-a" }),
+          makeChange(task, { id: `${task.taskId}:repo-b`, repoKey: "repo-b" }),
+        ]),
+      });
+      const orch = makeOrchestrator(stateStore, makeReview(), [
+        {
+          integrationId: "g-1",
+          repoKey: "repo-b",
+          cloneUrl: "ssh://gerrit.example.com:29418/team/repo-b.git",
+        },
+      ]);
+
+      await orch.markChangeMerged("g-1", "Iabc", "team/repo-b");
+
+      expect(stateStore.updateChangePerRepositoryStatusById).toHaveBeenCalledWith(
+        task.taskId,
+        `${task.taskId}:repo-b`,
+        "MERGED"
+      );
+    });
+
+    it("resolves the Gerrit project path from an SCP-style clone URL", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue([
+          makeChange(task, { id: `${task.taskId}:repo-b`, repoKey: "repo-b" }),
+        ]),
+      });
+      const orch = makeOrchestrator(stateStore, makeReview(), [
+        {
+          integrationId: "g-1",
+          repoKey: "repo-b",
+          cloneUrl: "git@gerrit.example.com:team/repo-b.git",
+        },
+      ]);
+
+      await orch.markChangeMerged("g-1", "Iabc", "team/repo-b");
+
+      expect(stateStore.updateChangePerRepositoryStatusById).toHaveBeenCalledWith(
+        task.taskId,
+        `${task.taskId}:repo-b`,
+        "MERGED"
+      );
     });
 
     it("transitions REVIEW_WATCHING → REVIEW_DONE for merged review tasks", async () => {

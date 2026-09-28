@@ -1601,6 +1601,12 @@ export interface StateStore {
     changeId?: string
   ): Promise<void>;
 
+  updateChangePerRepositoryStatusById(
+    taskId: TaskId,
+    changeRowId: string,
+    status: string
+  ): Promise<void>;
+
   /**
    * Mark change_per_repository rows as ORPHANED when a retry push produces
    * fewer commits than the previous cycle (commitIndex > maxCommitIndex).

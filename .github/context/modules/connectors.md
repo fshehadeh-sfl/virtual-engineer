@@ -106,7 +106,7 @@ Methods used by the orchestrator:
 - Host-side runtime listener that spawns `ssh ... gerrit stream-events` once per active Gerrit integration demanded by an enabled review project or a non-terminal task with an external change. A coding project with no pushed change does not open a listener.
 - Runs the capped assignment backfill on first connection and on explicit project-change requests. Repeat requests share one in-flight query, requests received while connecting wait for the first stdout byte, and no backfill request restarts the SSH process.
 - Cancels pending reconnect timers as soon as demand disappears, resets reconnect attempts when connection configuration changes, and bounds shutdown draining so stalled provider work cannot block process exit indefinitely.
-- Routes `change-merged` / `change-abandoned` into the orchestrator and `patchset-created` / `reviewer-added` / `comment-added` into both feedback checks and, when `reviewerAccountId` is configured, the review trigger.
+- Routes `change-merged` / `change-abandoned` into the orchestrator and `patchset-created` / `reviewer-added` / `comment-added` into both feedback checks and, when `reviewerAccountId` is configured, the review trigger. For `change-merged`, Gerrit's `change.project` is forwarded with the integration and Change-Id; the orchestrator resolves it against the configured push target and ignores missing or ambiguous matches.
 - Applies the same CI/vote classification as SSH polling, including `ci-failure-*` IDs for actionable failure events.
 - Maintains in-memory connection state (`connected`, `reconnecting`, last event, reconnect count, last error) for the admin dashboard.
 

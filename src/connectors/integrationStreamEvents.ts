@@ -14,7 +14,7 @@ export interface IntegrationEventStreamStatus {
 
 export interface IntegrationEventStreamOrchestrator {
   triggerFeedbackForChange(integrationId: string, changeId: string, streamComments?: ReviewComment[]): Promise<void>;
-  markChangeMerged(integrationId: string, changeId: string): Promise<void>;
+  markChangeMerged(integrationId: string, changeId: string, gerritProject?: string): Promise<void>;
   markChangeAbandoned(integrationId: string, changeId: string): Promise<void>;
 }
 

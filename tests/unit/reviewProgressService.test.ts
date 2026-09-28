@@ -190,6 +190,65 @@ describe("ReviewProgressService", () => {
     );
   });
 
+  it("marks only the event's matching repo row and closes after the final active merge", async () => {
+    const task = makeTask();
+    const changes = [
+      makeChange(task, { id: "change-api", repoKey: "team/api", changeId: "Ishared" }),
+      makeChange(task, { id: "change-ui", repoKey: "team/ui", changeId: "Ishared" }),
+      makeChange(task, {
+        id: "change-orphan",
+        repoKey: "team/old",
+        changeId: "Iold",
+        status: "ORPHANED",
+      }),
+    ];
+    const updateChangeStatus = vi.fn(async (_taskId: Task["taskId"], rowId: string, status: string) => {
+      const change = changes.find((candidate) => candidate.id === rowId);
+      if (change && change.status !== "ORPHANED" && change.status !== "NO_CHANGE") {
+        change.status = status;
+      }
+    });
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn(async () => changes),
+      updateChangeStatus,
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.markChangeMerged(task, "gerrit-1", "Ishared", "team/api");
+
+    expect(updateChangeStatus).toHaveBeenCalledWith(task.taskId, "change-api", "MERGED");
+    expect(changes[1]?.status).toBe("OPEN");
+    expect(dependencies.transition).not.toHaveBeenCalledWith(task.taskId, "MERGED");
+
+    await service.markChangeMerged(task, "gerrit-1", "Iold", "team/old");
+    expect(updateChangeStatus).toHaveBeenCalledTimes(1);
+
+    await service.markChangeMerged(task, "gerrit-1", "Ishared", "team/ui");
+
+    expect(updateChangeStatus).toHaveBeenLastCalledWith(task.taskId, "change-ui", "MERGED");
+    expect(dependencies.transition).toHaveBeenCalledWith(task.taskId, "MERGED");
+    expect(dependencies.closeTicket).toHaveBeenCalledOnce();
+  });
+
+  it("treats persisted merged rows as authoritative over stale open polling results", async () => {
+    const task = makeTask();
+    const mergedChange = makeChange(task, { status: "MERGED" });
+    const reviewConnector = {
+      getChangeStatus: vi.fn().mockResolvedValue("OPEN"),
+    } as unknown as ReviewConnector;
+    const dependencies = makeDependencies(task, reviewConnector, {
+      getChangesForTask: vi.fn().mockResolvedValue([mergedChange]),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.check(task);
+
+    expect(reviewConnector.getChangeStatus).not.toHaveBeenCalled();
+    expect(dependencies.updateChangeStatus).not.toHaveBeenCalled();
+    expect(dependencies.transition).toHaveBeenCalledWith(task.taskId, "MERGED");
+    expect(dependencies.closeTicket).toHaveBeenCalledOnce();
+  });
+
   it("abandons the task when any repository change is abandoned", async () => {
     const task = makeTask();
     const change = makeChange(task);
@@ -206,9 +265,8 @@ describe("ReviewProgressService", () => {
 
     expect(dependencies.updateChangeStatus).toHaveBeenCalledWith(
       task.taskId,
-      change.repoKey,
-      "ABANDONED",
-      change.changeId
+      change.id,
+      "ABANDONED"
     );
     expect(dependencies.abandonTask).toHaveBeenCalledWith(
       task,
