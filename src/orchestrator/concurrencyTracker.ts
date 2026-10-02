@@ -61,7 +61,13 @@ export interface ConcurrencyTracker {
   acquire(projectId: ProjectId, agentId: AgentId): Promise<ConcurrencyLease | null>;
 
   /** Wait until a slot is available, then reserve and return it. */
-  acquireWhenAvailable(projectId: ProjectId, agentId: AgentId, signal?: AbortSignal, taskId?: TaskId): Promise<ConcurrencyLease>;
+  acquireWhenAvailable(
+    projectId: ProjectId,
+    agentId: AgentId,
+    signal?: AbortSignal,
+    taskId?: TaskId,
+    priority?: number,
+  ): Promise<ConcurrencyLease>;
 
   isWaiting(taskId: TaskId): boolean;
 
@@ -97,6 +103,14 @@ interface PendingAcquisition {
   projectId: ProjectId;
   agentId: AgentId;
   taskId: TaskId | undefined;
+  /**
+   * Creation-order priority for the wait queue. Lower values are served first,
+   * so an older task (smaller `createdAt`) is granted a slot before a newer
+   * task even if the newer task called `acquireWhenAvailable` first. Defaults
+   * to `Infinity` when no priority is supplied, preserving FIFO-by-call-order
+   * for callers that do not pass one.
+   */
+  priority: number;
   signal: AbortSignal | undefined;
   onAbort: (() => void) | undefined;
   settled: boolean;
@@ -270,7 +284,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
       return acquireSlot(projectId, agentId);
     },
 
-    async acquireWhenAvailable(projectId, agentId, signal, taskId): Promise<ConcurrencyLease> {
+    async acquireWhenAvailable(projectId, agentId, signal, taskId, priority): Promise<ConcurrencyLease> {
       return new Promise<ConcurrencyLease>((resolve, reject) => {
         if (signal?.aborted === true) {
           reject(toRejectionError(signal.reason));
@@ -280,6 +294,7 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
           projectId,
           agentId,
           taskId,
+          priority: priority ?? Number.POSITIVE_INFINITY,
           signal,
           onAbort: undefined,
           settled: false,
@@ -297,7 +312,16 @@ export function createConcurrencyTracker(deps: ConcurrencyTrackerDeps): Concurre
           };
           signal.addEventListener("abort", pending.onAbort, { once: true });
         }
-        pendingAcquisitions.push(pending);
+        // Insert in ascending priority order so the drain loop and
+        // `hasEarlierWaiter` (both array-order scans) serve older tasks first.
+        let insertAt = pendingAcquisitions.length;
+        for (let i = 0; i < pendingAcquisitions.length; i += 1) {
+          if (pendingAcquisitions[i]!.priority > pending.priority) {
+            insertAt = i;
+            break;
+          }
+        }
+        pendingAcquisitions.splice(insertAt, 0, pending);
         void drainPendingAcquisitions().catch((err: unknown) => {
           log.error({ err, projectId, agentId }, "failed to drain concurrency waiters");
         });

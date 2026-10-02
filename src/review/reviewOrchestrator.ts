@@ -673,6 +673,7 @@ export class ReviewOrchestrator {
             project.agentId,
             deadlineController.signal,
             taskId,
+            task.createdAt.getTime(),
           ),
           deadlineController.signal,
           timeoutError,

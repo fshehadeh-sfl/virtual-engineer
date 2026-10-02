@@ -597,7 +597,7 @@ export class Orchestrator {
         const signal = this.activeTaskSignals.get(task.taskId);
         try {
           cycleLease = await this.projectMode.concurrencyTracker.acquireWhenAvailable(
-            project.id, project.agentId, signal, task.taskId,
+            project.id, project.agentId, signal, task.taskId, task.createdAt.getTime(),
           );
         } catch (err) {
           if (signal?.aborted === true) return;

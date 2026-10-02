@@ -111,6 +111,29 @@ describe("ConcurrencyTracker", () => {
     tracker.release(next);
   });
 
+  it("grants the next slot to the older task even when a newer task enqueues first", async () => {
+    const tracker = createConcurrencyTracker(makeStubs({ perAgent: 1 }).deps);
+    const active = await tracker.acquire(pid("p1"), aid("a1"));
+    // Newer task (higher createdAt) enqueues first, then older task (lower createdAt).
+    const newer = tracker.acquireWhenAvailable(
+      pid("p2"), aid("a1"), undefined, makeTaskId("newer"), 200,
+    );
+    const older = tracker.acquireWhenAvailable(
+      pid("p3"), aid("a1"), undefined, makeTaskId("older"), 100,
+    );
+
+    tracker.release(active!);
+    // Older task (lower priority) must win the first freed slot.
+    const olderLease = await older;
+    expect(tracker.snapshot().global).toBe(1);
+    tracker.release(olderLease);
+    // Only after the older task releases does the newer task acquire.
+    const newerLease = await newer;
+    expect(tracker.snapshot().global).toBe(1);
+    tracker.release(newerLease);
+    expect(tracker.snapshot().global).toBe(0);
+  });
+
   it("rejects a queued acquisition when its limit lookup fails", async () => {
     const tracker = createConcurrencyTracker({
       agentStore: {

@@ -1716,6 +1716,7 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
       "agent-1",
       expect.any(AbortSignal),
       initial.taskId,
+      expect.any(Number),
     );
     expect(concurrencyTracker.release).toHaveBeenCalledOnce();
     expect(concurrencyTracker.release).toHaveBeenCalledWith(lease);
