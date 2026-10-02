@@ -68,6 +68,12 @@ function getCloneUrlProjectPath(cloneUrl: string): string | null {
   return repositoryPath.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
 }
 
+function cloneUrlMatchesGerritProject(cloneUrl: string, gerritProject: string): boolean {
+  const repositoryPath = getCloneUrlProjectPath(cloneUrl);
+  if (!repositoryPath) return false;
+  return repositoryPath === gerritProject || repositoryPath.endsWith(`/${gerritProject}`);
+}
+
 export interface OrchestratorConfig {
   maxAgentCycles: number;
   maxRetryAttempts: number;
@@ -440,7 +446,7 @@ export class Orchestrator {
     const matchingTargets = pushTargets.filter((target) => {
       if (target.integrationId !== integrationId) return false;
       if (target.repoKey === gerritProject) return true;
-      return getCloneUrlProjectPath(target.cloneUrl) === gerritProject;
+      return cloneUrlMatchesGerritProject(target.cloneUrl, gerritProject);
     });
     return matchingTargets.length === 1 ? matchingTargets[0]!.repoKey : null;
   }

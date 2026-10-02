@@ -1316,6 +1316,37 @@ describe("SqliteStateStore", () => {
       await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toBeNull();
     });
 
+    it("ignores merged rows when resolving an active external change id", async () => {
+      const mergedTaskId = makeTaskId(randomUUID());
+      const activeTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("shared-active-change");
+
+      await store.createTask(mergedTaskId, makeTicketId("merged-task"));
+      await store.createTask(activeTaskId, makeTicketId("active-task"));
+      await store.saveChangePerRepository(
+        mergedTaskId,
+        "repo-merged",
+        changeId,
+        null,
+        "MERGED",
+        "integration-a",
+        "gerrit"
+      );
+      await store.saveChangePerRepository(
+        activeTaskId,
+        "repo-active",
+        changeId,
+        null,
+        "OPEN",
+        "integration-a",
+        "gerrit"
+      );
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toMatchObject({
+        taskId: activeTaskId,
+      });
+    });
+
     it("falls back to integration-scoped review tasks without per-repository rows", async () => {
       const firstTaskId = makeTaskId(randomUUID());
       const secondTaskId = makeTaskId(randomUUID());

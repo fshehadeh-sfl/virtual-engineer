@@ -1021,7 +1021,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     if (integrationId !== null) {
       const scopedChangeRows = raw
         .prepare(
-          "SELECT DISTINCT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? AND status NOT IN ('NO_CHANGE', 'ORPHANED') LIMIT 2"
+          "SELECT DISTINCT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? AND status NOT IN ('NO_CHANGE', 'ORPHANED', 'MERGED', 'ABANDONED') LIMIT 2"
         )
         .all(externalChangeId, integrationId) as { task_id: string }[];
       if (scopedChangeRows.length > 1) return null;

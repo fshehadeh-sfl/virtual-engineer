@@ -343,6 +343,31 @@ describe("Orchestrator — webhook entry points (Phase 5)", () => {
       );
     });
 
+    it("resolves the Gerrit project path from an HTTP clone URL with /a/ prefix", async () => {
+      const task = makeTask({ state: "IN_REVIEW" });
+      const stateStore = makeStateStore({
+        findTaskByExternalChangeId: vi.fn().mockResolvedValue(task),
+        getChangesForTask: vi.fn().mockResolvedValue([
+          makeChange(task, { id: `${task.taskId}:repo-b`, repoKey: "repo-b" }),
+        ]),
+      });
+      const orch = makeOrchestrator(stateStore, makeReview(), [
+        {
+          integrationId: "g-1",
+          repoKey: "repo-b",
+          cloneUrl: "https://gerrit.example.com/a/team/repo-b.git",
+        },
+      ]);
+
+      await orch.markChangeMerged("g-1", "Iabc", "team/repo-b");
+
+      expect(stateStore.updateChangePerRepositoryStatusById).toHaveBeenCalledWith(
+        task.taskId,
+        `${task.taskId}:repo-b`,
+        "MERGED"
+      );
+    });
+
     it("transitions REVIEW_WATCHING → REVIEW_DONE for merged review tasks", async () => {
       const task = makeTask({ state: "REVIEW_WATCHING" });
       const stateStore = makeStateStore({

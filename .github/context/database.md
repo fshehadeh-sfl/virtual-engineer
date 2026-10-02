@@ -89,7 +89,7 @@ measured zero and missing provider usage.
 
 ## Per-Repository Change Status
 
-- Integration-scoped `findTaskByExternalChangeId()` lookup for `change_per_repository` rows excludes `NO_CHANGE` / `ORPHANED` entries and returns no task when more than one task matches, rather than selecting the most recently updated task.
+- Integration-scoped `findTaskByExternalChangeId()` lookup for `change_per_repository` rows excludes `NO_CHANGE` / `ORPHANED` / `MERGED` / `ABANDONED` entries and returns no task when more than one task matches, rather than selecting the most recently updated task.
 - When no per-repository row resolves, legacy code-generation `tasks.gerrit_change_id` values resolve only if the task's project has exactly one push target for the supplied integration. Projectless tasks, multiple targets, and multiple task candidates remain unresolved.
 - `updateChangePerRepositoryStatusById(taskId, changeRowId, status)` updates a single existing row using `(task_id, id)`. It does not reactivate `NO_CHANGE` / `ORPHANED` rows or downgrade a persisted `MERGED` / `ABANDONED` status from a stale poll. This store-contract change adds no column, index, or migration.
 
