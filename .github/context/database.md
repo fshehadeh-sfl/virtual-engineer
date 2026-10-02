@@ -44,8 +44,8 @@
 The project store normalizes an absent or invalid `assignmentMode` to `manual`;
 no SQL column or migration is required. `automatic` means the reviewer provider
 adds VE idempotently on revision events, while initial open-change backfill is
-disabled. Mode changes are execution-affecting and use the same active-task
-confirmation as ticket-source, push-target, agent, script, and skill changes.
+disabled. Mode changes are execution-affecting and persist immediately without
+an active-task confirmation roundtrip.
 
 `StateStore.updateProjectConfiguration()` returns the updated project plus an
 `executionChanged` flag. Execution-affecting changes now persist immediately
