@@ -173,7 +173,6 @@ const LEGACY_SIGNATURES: ReadonlyArray<readonly [string, readonly string[]]> = [
 ];
 
 const RETIRED_LEGACY_COLUMNS = new Map<string, ReadonlySet<string>>([
-  ["tasks", new Set(["deleted_at"])],
   ["projects", new Set(["skill_discovery_enabled", "local_skills_path"])],
   ["project_vendor_components", new Set(["note", "integration_id", "repo_key"])],
 ]);

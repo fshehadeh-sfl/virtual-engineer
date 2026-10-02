@@ -1504,7 +1504,10 @@ export interface StateStore {
    */
   deleteTask(taskId: TaskId): Promise<void>;
 
-  /** Force-delete a task and all siblings sharing the same ticketId or gerritChangeId. */
+  /**
+   * Soft-delete a task and all siblings sharing the same ticketId or gerritChangeId.
+   * Terminal siblings are hidden from operational reads while immutable history is preserved.
+   */
   deleteTaskGroup(taskId: TaskId): Promise<void>;
 
   // Cycle audit trail
