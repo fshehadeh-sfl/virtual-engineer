@@ -98,7 +98,12 @@ const policyUpdateSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
 });
-const rulesSchema = z.object({ rules: z.array(ruleSchema) });
+const rulesUpdateSchema = z.object({
+  rules: z.array(z.object({
+    permission: z.string().trim().min(1, "permission is required"),
+    resourceId: z.string().min(1).nullable().optional(),
+  })),
+});
 const bindingSchema = z.object({
   principalType: z.enum(["user", "group"]),
   principalId: z.string().min(1),
@@ -216,11 +221,27 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
     const policyStore = deps.policyStore;
     if (!requireStore(policyStore, res, "Policy store not available")) return;
     const policies = await policyStore.listPolicies();
-    const withCounts = await Promise.all(policies.map(async (p) => ({
-      ...serializePolicy(p),
-      ruleCount: (await policyStore.listPolicyRules(p.id)).length,
-      bindingCount: (await policyStore.listBindingsForPolicy(p.id)).length,
-    })));
+    const groupNames = new Map((await policyStore.listGroups()).map((g) => [g.id, g.name]));
+    const userNames = new Map<string, string | null>();
+    const principalName = async (type: PrincipalType, principalId: string): Promise<string> => {
+      if (type === "group") return groupNames.get(principalId) ?? principalId;
+      if (type === "system") return principalId;
+      if (!userNames.has(principalId)) userNames.set(principalId, (await policyStore.getUserById(principalId))?.username ?? null);
+      return userNames.get(principalId) ?? principalId;
+    };
+    const withCounts = await Promise.all(policies.map(async (p) => {
+      const bindings = await policyStore.listBindingsForPolicy(p.id);
+      return {
+        ...serializePolicy(p),
+        ruleCount: (await policyStore.listPolicyRules(p.id)).length,
+        bindingCount: bindings.length,
+        bindings: await Promise.all(bindings.map(async (b) => ({
+          principalType: b.principalType,
+          principalId: b.principalId,
+          principalName: await principalName(b.principalType, b.principalId),
+        }))),
+      };
+    }));
     writeJson(res, 200, { policies: withCounts });
   }, MANAGE);
 
@@ -297,9 +318,31 @@ export function registerPolicyRoutes(router: Router, deps: PolicyRoutesDeps): vo
     const existing = await policyStore.getPolicyById(id);
     if (!existing) { writeJson(res, 404, { error: "Policy not found" }); return; }
     if (existing.builtin) { writeJson(res, 409, { error: "Built-in policy rules cannot be modified" }); return; }
-    const parsed = rulesSchema.safeParse(await readBody(req));
+    const parsed = rulesUpdateSchema.safeParse(await readBody(req));
     if (!parsed.success) { writeJson(res, 400, zodErrorBody(parsed.error, "Invalid rules payload")); return; }
-    const rules = await policyStore.setPolicyRules(id, parsed.data.rules.map((r) => ({ permission: r.permission, resourceId: r.resourceId ?? null })));
+    const existingUnknownRules = new Set(
+      (await policyStore.listPolicyRules(id))
+        .filter((rule) => !isKnownPermission(rule.permission))
+        .map((rule) => `${rule.permission}\u0000${rule.resourceId ?? ""}`)
+    );
+    const nextRules: PolicyRuleInput[] = [];
+    for (const rule of parsed.data.rules) {
+      const normalized = { permission: rule.permission, resourceId: rule.resourceId ?? null };
+      if (isKnownPermission(normalized.permission)) {
+        if (normalized.resourceId !== null && !isScopeablePermission(normalized.permission)) {
+          writeJson(res, 400, { error: "resourceId is only allowed on resource-scoped permissions" });
+          return;
+        }
+        nextRules.push(normalized);
+        continue;
+      }
+      if (!existingUnknownRules.has(`${normalized.permission}\u0000${normalized.resourceId ?? ""}`)) {
+        writeJson(res, 400, { error: `unknown permission: ${normalized.permission}` });
+        return;
+      }
+      nextRules.push(normalized);
+    }
+    const rules = await policyStore.setPolicyRules(id, nextRules);
     recordAudit(deps.auditStore, req, { action: "policy.rules_set", targetType: "policy", targetId: id, details: { ruleCount: rules.length } });
     writeJson(res, 200, { rules: rules.map(serializeRule) });
   }, MANAGE);

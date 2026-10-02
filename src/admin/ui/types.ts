@@ -29,6 +29,7 @@ export interface ApiTask {
   displayId: string | null;
   createdAt: string;
   updatedAt: string;
+  waitingForAgentSlot?: boolean;
   changesPerRepo?: ChangePerRepo[];
 }
 
@@ -478,6 +479,7 @@ export interface ApiPolicy {
   updatedAt: string;
   ruleCount?: number;
   bindingCount?: number;
+  bindings?: Array<{ principalType: "user" | "group" | "system"; principalId: string; principalName: string }>;
 }
 
 export interface ApiPolicyRule {
@@ -493,7 +495,7 @@ export interface ApiPolicyBinding {
   principalId: string;
 }
 
-export interface ApiPolicyDetail extends ApiPolicy {
+export interface ApiPolicyDetail extends Omit<ApiPolicy, "bindings"> {
   rules: ApiPolicyRule[];
   bindings: ApiPolicyBinding[];
 }
