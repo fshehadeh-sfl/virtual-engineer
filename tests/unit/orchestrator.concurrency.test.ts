@@ -211,7 +211,7 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
   });
 
-  it("resumeStalledCodeGenTask advances a CONTEXT_BUILDING task once the slot frees up", async () => {
+  it("queues a CONTEXT_BUILDING task until the slot frees up without a polling retry", async () => {
     const project = await seedProjectAndAgent(store, { agentMax: 1 });
     const tracker = createConcurrencyTracker({
       agentStore: { getAgentById: (id) => store.getAgentById(id) },
@@ -230,18 +230,53 @@ describe("Orchestrator — Phase 6 concurrency gating", () => {
     await store.setTaskProjectId(task.taskId, project.id);
     await store.transition(task.taskId, "CONTEXT_BUILDING");
 
-    // Slot saturated externally → resume defers without advancing the task.
     const lease = await tracker.acquire(project.id, project.agentId);
     expect(lease).not.toBeNull();
-    await orch.resumeStalledCodeGenTask(task.taskId);
-    expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
+    const resumed = orch.resumeStalledCodeGenTask(task.taskId);
+    try {
+      await vi.waitFor(() => expect(tracker.isWaiting(task.taskId)).toBe(true));
+      expect((await store.getTask(task.taskId))!.state).toBe("CONTEXT_BUILDING");
+      await orch.resumeStalledCodeGenTask(task.taskId);
+    } finally {
+      tracker.release(lease!);
+      await resumed;
+    }
 
-    // Free the slot → next resume drives the cycle to completion (FAILED here
-    // because the mock workspace cannot clone), and releases the slot.
-    tracker.release(lease!);
-    await orch.resumeStalledCodeGenTask(task.taskId);
     expect((await store.getTask(task.taskId))!.state).toBe("FAILED");
     expect(tracker.snapshot()).toEqual({ global: 0, perProject: {}, perAgent: {} });
+  });
+
+  it("removes an abandoned code task from the queue without failing it", async () => {
+    const project = await seedProjectAndAgent(store, { agentMax: 1 });
+    const tracker = createConcurrencyTracker({
+      agentStore: { getAgentById: (id) => store.getAgentById(id) },
+    });
+    const orch = buildOrchestrator(store, tracker);
+    const task = await store.createTask(
+      `task-${randomUUID()}` as never,
+      "abandon-waiting" as TicketId,
+      "x",
+      "",
+      "redmine:int-1",
+      undefined,
+    );
+    await store.setTaskProjectId(task.taskId, project.id);
+    await store.transition(task.taskId, "CONTEXT_BUILDING");
+    const active = await tracker.acquire(project.id, project.agentId);
+    const waiting = orch.resumeStalledCodeGenTask(task.taskId);
+
+    try {
+      await vi.waitFor(() => expect(tracker.isWaiting(task.taskId)).toBe(true));
+      const abandoned = await orch.abandonTask(task.taskId);
+      await waiting;
+
+      expect(abandoned.state).toBe("ABANDONED");
+      expect((await store.getTask(task.taskId))?.state).toBe("ABANDONED");
+      expect(tracker.isWaiting(task.taskId)).toBe(false);
+      expect(tracker.snapshot().global).toBe(1);
+    } finally {
+      tracker.release(active!);
+    }
   });
 
   it("does not drive the same stalled task concurrently", async () => {
