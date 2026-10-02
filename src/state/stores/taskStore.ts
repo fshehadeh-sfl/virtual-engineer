@@ -117,6 +117,7 @@ export interface TaskStoreApi {
   setTaskProjectId(taskId: TaskId, projectId: ProjectId): Promise<void>;
   setTaskPushRef(taskId: TaskId, pushRef: string): Promise<void>;
   updateChangePerRepositoryStatus(taskId: TaskId, repoKey: string, status: string, changeId?: string): Promise<void>;
+  updateChangePerRepositoryStatusById(taskId: TaskId, changeRowId: string, status: string): Promise<void>;
   orphanExcessChanges(taskId: TaskId, repoKey: string, maxCommitIndex: number): Promise<number>;
   getFailedTasksForProject(projectId: ProjectId): Promise<Task[]>;
 }
@@ -1018,11 +1019,13 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     if (!externalChangeId) return null;
 
     if (integrationId !== null) {
-      const scopedChangeRow = raw
+      const scopedChangeRows = raw
         .prepare(
-          "SELECT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? ORDER BY updated_at DESC LIMIT 1"
+          "SELECT DISTINCT task_id FROM change_per_repository WHERE change_id = ? AND integration_id = ? AND status NOT IN ('NO_CHANGE', 'ORPHANED', 'MERGED', 'ABANDONED') LIMIT 2"
         )
-        .get(externalChangeId, integrationId) as { task_id: string } | undefined;
+        .all(externalChangeId, integrationId) as { task_id: string }[];
+      if (scopedChangeRows.length > 1) return null;
+      const scopedChangeRow = scopedChangeRows[0];
       if (scopedChangeRow) {
         const scopedTask = await db.query.tasks.findFirst({
           where: eq(tasks.taskId, scopedChangeRow.task_id as TaskId),
@@ -1041,6 +1044,24 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         });
         if (reviewTask) return rowToTask(reviewTask);
       }
+
+      const legacyTaskRows = raw
+        .prepare(
+          "SELECT DISTINCT task.task_id FROM tasks task " +
+          "JOIN project_push_targets target ON target.project_id = task.project_id " +
+          "WHERE task.task_type = 'code-gen' AND task.gerrit_change_id = ? " +
+          "AND target.integration_id = ? " +
+          "AND (SELECT COUNT(*) FROM project_push_targets target_count " +
+          "WHERE target_count.project_id = task.project_id " +
+          "AND target_count.integration_id = ?) = 1 LIMIT 2"
+        )
+        .all(externalChangeId, integrationId, integrationId) as { task_id: string }[];
+      if (legacyTaskRows.length !== 1) return null;
+
+      const legacyTask = await db.query.tasks.findFirst({
+        where: eq(tasks.taskId, legacyTaskRows[0]!.task_id as TaskId),
+      });
+      if (legacyTask) return rowToTask(legacyTask);
       return null;
     }
 
@@ -1122,6 +1143,23 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     return Promise.resolve();
   }
 
+  function updateChangePerRepositoryStatusById(
+    taskId: TaskId,
+    changeRowId: string,
+    status: string
+  ): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    raw
+      .prepare(
+        `UPDATE change_per_repository SET status = ?, updated_at = ?
+         WHERE task_id = ? AND id = ?
+           AND status NOT IN ('NO_CHANGE', 'ORPHANED')
+           AND (status NOT IN ('MERGED', 'ABANDONED') OR status = ?)`
+      )
+      .run(status, now, taskId, changeRowId, status);
+    return Promise.resolve();
+  }
+
   /**
    * Mark change_per_repository rows as ORPHANED when a retry push produces fewer
    * commits than the previous cycle. Rows whose commitIndex exceeds maxCommitIndex
@@ -1187,6 +1225,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     setTaskProjectId,
     setTaskPushRef,
     updateChangePerRepositoryStatus,
+    updateChangePerRepositoryStatusById,
     orphanExcessChanges,
     getFailedTasksForProject,
   };

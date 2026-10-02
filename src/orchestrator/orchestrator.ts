@@ -56,6 +56,24 @@ export type { ProjectModeDeps } from "./projectMode.js";
 
 const log = getLogger("orchestrator");
 
+function getCloneUrlProjectPath(cloneUrl: string): string | null {
+  let repositoryPath: string;
+  try {
+    repositoryPath = new URL(cloneUrl).pathname;
+  } catch {
+    const scpMatch = /^(?:[^@/\s]+@)?(?:\[[^\]]+\]|[^:/\s]+):(.+)$/.exec(cloneUrl);
+    if (!scpMatch?.[1]) return null;
+    repositoryPath = scpMatch[1];
+  }
+  return repositoryPath.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "");
+}
+
+function cloneUrlMatchesGerritProject(cloneUrl: string, gerritProject: string): boolean {
+  const repositoryPath = getCloneUrlProjectPath(cloneUrl);
+  if (!repositoryPath) return false;
+  return repositoryPath === gerritProject || repositoryPath.endsWith(`/${gerritProject}`);
+}
+
 export interface OrchestratorConfig {
   maxAgentCycles: number;
   maxRetryAttempts: number;
@@ -130,8 +148,8 @@ export class Orchestrator {
         this.stateStore.getChangesForTask(taskId),
       transition: (taskId, state): ReturnType<ReviewProgressDependencies["transition"]> =>
         this.stateStore.transition(taskId, state),
-      updateChangeStatus: (taskId, repoKey, status, changeId): ReturnType<ReviewProgressDependencies["updateChangeStatus"]> =>
-        this.stateStore.updateChangePerRepositoryStatus(taskId, repoKey, status, changeId),
+      updateChangeStatus: (taskId, changeRowId, status): ReturnType<ReviewProgressDependencies["updateChangeStatus"]> =>
+        this.stateStore.updateChangePerRepositoryStatusById(taskId, changeRowId, status),
       getTask: (taskId): ReturnType<ReviewProgressDependencies["getTask"]> =>
         this.stateStore.getTask(taskId),
       resolveReviewConnector: (task): ReturnType<ReviewProgressDependencies["resolveReviewConnector"]> =>
@@ -359,7 +377,7 @@ export class Orchestrator {
   }
 
   /** Webhook handler: mark the associated task's change as merged and close its ticket. */
-  async markChangeMerged(integrationId: string, externalChangeId: string): Promise<void> {
+  async markChangeMerged(integrationId: string, externalChangeId: string, gerritProject?: string): Promise<void> {
     const task = await this.findTaskForExternalChange(integrationId, externalChangeId);
     if (!task) {
       log.info({ integrationId, externalChangeId }, "webhook merged: no task for change, ignoring");
@@ -377,9 +395,20 @@ export class Orchestrator {
         log.info({ taskId: current.taskId, state: current.state }, "webhook merged: task not IN_REVIEW/REVIEW_WATCHING, ignoring");
         return;
       }
-      log.info({ taskId: current.taskId, externalChangeId }, "webhook merged: closing ticket");
-      const merged = await this.stateStore.transition(current.taskId, "MERGED");
-      await this.closeTicket(merged);
+      let repoKey: string | undefined;
+      if (gerritProject !== undefined) {
+        const resolvedRepoKey = await this.resolveGerritRepoKey(current, integrationId, gerritProject);
+        if (resolvedRepoKey === null) {
+          log.warn(
+            { taskId: current.taskId, integrationId, externalChangeId, gerritProject },
+            "webhook merged: Gerrit project did not resolve to one push target"
+          );
+          return;
+        }
+        repoKey = resolvedRepoKey;
+      }
+      log.info({ taskId: current.taskId, integrationId, externalChangeId }, "webhook merged: checking change convergence");
+      await this.reviewProgressService.markChangeMerged(current, integrationId, externalChangeId, repoKey);
     });
   }
 
@@ -405,6 +434,21 @@ export class Orchestrator {
     const separator = externalChangeId.indexOf("#");
     if (separator <= 0 || separator === externalChangeId.length - 1) return null;
     return this.stateStore.findTaskByExternalChangeId(integrationId, externalChangeId.slice(separator + 1));
+  }
+
+  private async resolveGerritRepoKey(
+    task: Task,
+    integrationId: string,
+    gerritProject: string
+  ): Promise<string | null> {
+    if (!task.projectId || !this.projectMode) return null;
+    const pushTargets = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
+    const matchingTargets = pushTargets.filter((target) => {
+      if (target.integrationId !== integrationId) return false;
+      if (target.repoKey === gerritProject) return true;
+      return cloneUrlMatchesGerritProject(target.cloneUrl, gerritProject);
+    });
+    return matchingTargets.length === 1 ? matchingTargets[0]!.repoKey : null;
   }
 
   /** Resume an existing task's workflow, typically after a manual retry. */

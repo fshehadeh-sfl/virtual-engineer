@@ -41,7 +41,7 @@ Key public methods:
 - `resumeActiveTasks()`
 - `handleReviewEvent(changeId, taskId?)`
 - `triggerFeedbackForChange(integrationId, externalChangeId)`
-- `markChangeMerged(integrationId, externalChangeId)`
+- `markChangeMerged(integrationId, externalChangeId, gerritProject?)`
 - `markChangeAbandoned(integrationId, externalChangeId)`
 - `abandonTask(taskId)` / `deleteProject(projectId)` for lifecycle-owned admin mutations
 
@@ -56,7 +56,7 @@ Important behaviors:
 - project-mode ticket/review/VCS resolution can build project-bound connectors from the active integration plus VE-owned binding context; GitLab therefore reads ticket project selection from the `issue_tracking` binding's `ticketProjectKey` and MR/push project selection from the relevant `repoKey` rather than from integration-global `projectId`. Review status polling applies the same rule: a repository-qualified change id must match a bound `repoKey`, while a bare id may use context only when one repository is bound; ambiguous multi-repository changes never select the first repository implicitly
 - `runWorkflow()` is state-driven and restart-safe; an interrupted `AGENT_RUNNING` task with a persisted running result resumes that same cycle instead of consuming another cycle number
 - one shared `TaskLifecycleCoordinator` serializes code-gen workflows, review passes, polling/webhooks, manual abandon, and project deletion. Review cancellation aborts and awaits provider/agent work before the admin mutation. Project deletion first tombstones the project against both code-gen and review task creation, waits any in-progress creation lease, then cancels and barriers every project task before removing rows; stale invocations for deleted task ids are suppressed
-- webhook merge handling is dual-path: code-gen tasks in `IN_REVIEW` transition through `MERGED -> CLOSING -> DONE`, while review tasks in `REVIEW_WATCHING` transition directly to `REVIEW_DONE`
+- webhook merge handling is dual-path: code-gen tasks mark one uniquely resolved, active per-repo/per-commit row `MERGED` and close the ticket only when every active row is merged; `NO_CHANGE` and `ORPHANED` rows do not block convergence. Gerrit project identity is resolved to the integration-bound push target using `repoKey`, exact clone path, or clone-path suffix matches (`.../<project>`, including authenticated `/a/` HTTP paths); ambiguous matches are ignored, and polling remains the reconciliation fallback. Legacy task-level Gerrit IDs resolve only when project configuration uniquely proves the integration and push target. Review tasks in `REVIEW_WATCHING` transition directly to `REVIEW_DONE`.
 - fatal ticket handling is provider-agnostic: missing resources are detected via `TicketNotFoundError`, and non-fatal ticket API failures are handled via `TicketApiError` from `src/interfaces.ts`
 - fatal workflow handling re-reads the task before persisting an error; a missing row is treated as external deletion, while a read error is logged and fatal handling continues from the in-memory task. If an operator or external event already moved it to a terminal state such as `ABANDONED`, the handler preserves that state and failure reason instead of attempting an invalid transition to `FAILED`
 - review feedback for code-gen tasks is deduplicated via `processed_comments`
@@ -67,7 +67,7 @@ Important behaviors:
 - Coding cycles load the project's human-curated `project_vendor_components` rows (`listProjectVendorComponents`, optional on `ProjectModeDeps.projectStore`) and forward them as `AgentSession.vendorComponents`, mapped down to `{ sourcePath, localPath, origin }`. The field is omitted when the project tracks none, and `cloneUrl` / `revision` are never forwarded.
 - `postReviewLinkToTicket` posts the first cycle's non-orphaned review URLs back to the source ticket; later cycles reuse those reviews and do not post another note
 - `reactToCiFailures` controls whether comments tagged as GitHub `ci-run-*` or Gerrit `ci-failure-*` become retry feedback; the default remains off
-- `checkReviewProgress()` delegates to a single `ReviewProgressService` instance; the service owns single- and multi-repository status convergence, feedback aggregation, CI filtering, retry limits, and post-retry comment resolution
+- `checkReviewProgress()` delegates to a single `ReviewProgressService` instance; the service owns single- and multi-repository status convergence, feedback aggregation, CI filtering, retry limits, and post-retry comment resolution. Persisted `MERGED` / `ABANDONED` change rows are terminal for polling and are not reopened by stale provider reads.
 - review-progress dependencies are narrow callbacks for state access, connector resolution, feedback extraction, agent retry, ticket closure, and abandonment. They read the current project mode, VCS connector, and `maxAgentCycles`, so `setProjectMode()` and `updateRuntime()` remain effective without reconstructing the service
 - project connector resolution is delegated to `ProjectConnectorResolver`, agent adapter/config resolution to `AgentRuntimeResolver`, and multi-repository push/change tracking to `ProjectPushService`; each service reads the current project mode through a getter so hot-refresh remains effective
 - Gerrit push chains are tracked in `change_per_repository` with `commitIndex` and `subjectHash`

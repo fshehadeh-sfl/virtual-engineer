@@ -87,6 +87,12 @@ measured zero and missing provider usage.
 - The admin API trims and lowercases addresses, removes case-insensitive duplicates, and accepts at most 20 per target. Reviewer emails are supported only for Gerrit and GitLab push targets; GitHub requires usernames and rejects non-empty reviewer-email configuration.
 - `addProjectPushTarget` and `replaceProjectPushTargets` JSON-encode reviewer emails on write. `listProjectPushTargets` returns parsed string arrays and safely falls back to `[]` for malformed legacy values.
 
+## Per-Repository Change Status
+
+- Integration-scoped `findTaskByExternalChangeId()` lookup for `change_per_repository` rows excludes `NO_CHANGE` / `ORPHANED` / `MERGED` / `ABANDONED` entries and returns no task when more than one task matches, rather than selecting the most recently updated task.
+- When no per-repository row resolves, legacy code-generation `tasks.gerrit_change_id` values resolve only if the task's project has exactly one push target for the supplied integration. Projectless tasks, multiple targets, and multiple task candidates remain unresolved.
+- `updateChangePerRepositoryStatusById(taskId, changeRowId, status)` updates a single existing row using `(task_id, id)`. It does not reactivate `NO_CHANGE` / `ORPHANED` rows or downgrade a persisted `MERGED` / `ABANDONED` status from a stale poll. This store-contract change adds no column, index, or migration.
+
 ## Project Vendor Components
 
 - `project_vendor_components` (INTEGER `id` PK) persists workspace-scanned third-party components of a coding project: `project_id` (FK → `projects.id`), `source_path` (NOT NULL, the real manifest path in the checkout), nullable `local_path` / `clone_url` / `revision`, `origin`, and timestamps. The table holds only components no repository of ours owns; one that we do own becomes a `project_push_targets` row instead. `replaceProjectVendorComponents()` deletes and reinserts the project's rows in one transaction but carries the previous `created_at` over for any `(source_path, local_path)` pair that survives the replace, so the column keeps meaning "first tracked".

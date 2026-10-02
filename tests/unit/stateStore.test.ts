@@ -1222,6 +1222,131 @@ describe("SqliteStateStore", () => {
       });
     });
 
+    it("resolves legacy Gerrit task ids through one matching target and rejects ambiguity", async () => {
+      const agent = await store.createAgent({
+        name: "Legacy Gerrit Agent",
+        type: "coding",
+        modelConfigJson: "{}",
+        systemPromptId: "system_generic_code",
+        instructionsPromptId: "instructions_generic_code",
+        enabled: true,
+      });
+      const createProjectForIntegration = async (integrationId: string) => {
+        await store.upsertIntegration({
+          id: integrationId,
+          provider: "gerrit",
+          name: integrationId,
+          configJson: "{}",
+          enabled: true,
+        });
+        const project = await store.createProject({
+          id: makeProjectId(randomUUID()),
+          name: integrationId,
+          type: "coding",
+          agentId: agent.id,
+          enabled: true,
+        });
+        await store.addProjectPushTarget(project.id, {
+          integrationId,
+          repoKey: "root",
+          cloneUrl: `ssh://gerrit.example/${integrationId}/root.git`,
+          targetBranch: "main",
+          role: "primary",
+          commitOrder: 1,
+          localPath: ".",
+        });
+        return project;
+      };
+      const firstProject = await createProjectForIntegration("gerrit-a");
+      const secondProject = await createProjectForIntegration("gerrit-b");
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("legacy-shared-change");
+
+      await store.createTask(firstTaskId, makeTicketId("legacy-gerrit-a"));
+      await store.createTask(secondTaskId, makeTicketId("legacy-gerrit-b"));
+      await store.setTaskProjectId(firstTaskId, firstProject.id);
+      await store.setTaskProjectId(secondTaskId, secondProject.id);
+      await store.updateExternalChangeId(firstTaskId, changeId, 1);
+      await store.updateExternalChangeId(secondTaskId, changeId, 1);
+
+      await expect(store.findTaskByExternalChangeId("gerrit-a", changeId)).resolves.toMatchObject({
+        taskId: firstTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("gerrit-b", changeId)).resolves.toMatchObject({
+        taskId: secondTaskId,
+      });
+      await expect(store.findTaskByExternalChangeId("unknown-gerrit", changeId)).resolves.toBeNull();
+
+      const ambiguousProject = await createProjectForIntegration("gerrit-a");
+      const ambiguousTaskId = makeTaskId(randomUUID());
+      await store.createTask(ambiguousTaskId, makeTicketId("legacy-gerrit-ambiguous"));
+      await store.setTaskProjectId(ambiguousTaskId, ambiguousProject.id);
+      await store.updateExternalChangeId(ambiguousTaskId, changeId, 1);
+
+      await expect(store.findTaskByExternalChangeId("gerrit-a", changeId)).resolves.toBeNull();
+    });
+
+    it("does not choose a task when an active external change id is ambiguous", async () => {
+      const firstTaskId = makeTaskId(randomUUID());
+      const secondTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("ambiguous-change");
+
+      await store.createTask(firstTaskId, makeTicketId("ambiguous-a"));
+      await store.createTask(secondTaskId, makeTicketId("ambiguous-b"));
+      await store.saveChangePerRepository(
+        firstTaskId,
+        "repo-a",
+        changeId,
+        null,
+        "OPEN",
+        "integration-a",
+        "gerrit"
+      );
+      await store.saveChangePerRepository(
+        secondTaskId,
+        "repo-b",
+        changeId,
+        null,
+        "OPEN",
+        "integration-a",
+        "gerrit"
+      );
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toBeNull();
+    });
+
+    it("ignores merged rows when resolving an active external change id", async () => {
+      const mergedTaskId = makeTaskId(randomUUID());
+      const activeTaskId = makeTaskId(randomUUID());
+      const changeId = makeExternalChangeId("shared-active-change");
+
+      await store.createTask(mergedTaskId, makeTicketId("merged-task"));
+      await store.createTask(activeTaskId, makeTicketId("active-task"));
+      await store.saveChangePerRepository(
+        mergedTaskId,
+        "repo-merged",
+        changeId,
+        null,
+        "MERGED",
+        "integration-a",
+        "gerrit"
+      );
+      await store.saveChangePerRepository(
+        activeTaskId,
+        "repo-active",
+        changeId,
+        null,
+        "OPEN",
+        "integration-a",
+        "gerrit"
+      );
+
+      await expect(store.findTaskByExternalChangeId("integration-a", changeId)).resolves.toMatchObject({
+        taskId: activeTaskId,
+      });
+    });
+
     it("falls back to integration-scoped review tasks without per-repository rows", async () => {
       const firstTaskId = makeTaskId(randomUUID());
       const secondTaskId = makeTaskId(randomUUID());
@@ -1350,6 +1475,29 @@ describe("SqliteStateStore", () => {
       const sorted = changes.sort((a, b) => a.commitIndex - b.commitIndex);
       expect(sorted[0]?.status).toBe("OPEN");
       expect(sorted[1]?.status).toBe("MERGED");
+    });
+
+    it("updates one exact row and never reopens merged or orphaned rows", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("repo-exact-status"));
+
+      await store.saveChangePerRepository(taskId, "repo-a", "Ishared", null, "OPEN", "gerrit-a", "gerrit");
+      await store.saveChangePerRepository(taskId, "repo-b", "Ishared", null, "OPEN", "gerrit-a", "gerrit");
+
+      const changes = await store.getChangesForTask(taskId);
+      const repoAChange = changes.find((change) => change.repoKey === "repo-a");
+      const repoBChange = changes.find((change) => change.repoKey === "repo-b");
+      expect(repoAChange).toBeDefined();
+      expect(repoBChange).toBeDefined();
+
+      await store.updateChangePerRepositoryStatusById(taskId, repoBChange!.id, "MERGED");
+      await store.updateChangePerRepositoryStatusById(taskId, repoBChange!.id, "OPEN");
+      await store.orphanExcessChanges(taskId, "repo-a", -1);
+      await store.updateChangePerRepositoryStatusById(taskId, repoAChange!.id, "MERGED");
+
+      const updatedChanges = await store.getChangesForTask(taskId);
+      expect(updatedChanges.find((change) => change.repoKey === "repo-a")?.status).toBe("ORPHANED");
+      expect(updatedChanges.find((change) => change.repoKey === "repo-b")?.status).toBe("MERGED");
     });
 
     it("orphanExcessChanges marks rows beyond maxCommitIndex as ORPHANED", async () => {

@@ -224,12 +224,15 @@ describe("GerritStreamEventsManager", () => {
     expect(spawnProcess).toHaveBeenCalledTimes(1);
 
     child.emit("spawn");
-    child.stdout.write(JSON.stringify({ type: "change-merged", change: { id: "Imerged" } }) + "\n");
+    child.stdout.write(JSON.stringify({
+      type: "change-merged",
+      change: { id: "Imerged", project: "team/repo" },
+    }) + "\n");
     child.stdout.write(JSON.stringify({ type: "change-abandoned", change: { id: "Iabandoned" } }) + "\n");
     child.stdout.write(JSON.stringify({ type: "comment-added", change: { id: "Icomment" } }) + "\n");
     await flushAsyncWork();
 
-    expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "Imerged");
+    expect(orchestrator.markChangeMerged).toHaveBeenCalledWith("gerrit-a", "Imerged", "team/repo");
     expect(orchestrator.markChangeAbandoned).toHaveBeenCalledWith("gerrit-a", "Iabandoned");
     expect(orchestrator.triggerFeedbackForChange).toHaveBeenCalledWith("gerrit-a", "Icomment");
     // No review triggers for any of the above

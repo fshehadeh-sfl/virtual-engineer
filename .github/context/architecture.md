@@ -26,6 +26,8 @@ ticket source integration
    → webhook feedback back into Orchestrator
 ```
 
+Gerrit `change-merged` events carry the project identity to the orchestrator, which marks the matching active change row and closes a code-generation task only after all active rows are merged.
+
 ### Code review
 
 ```text
