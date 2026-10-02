@@ -1771,6 +1771,28 @@ describe("ReviewOrchestrator.runReview â failure paths", () => {
     expect(runner.createWorkspace).not.toHaveBeenCalled();
   });
 
+  it("releases the review slot if fetching review details fails after queueing", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    vi.mocked(mocks.provider.getChangeDetails).mockRejectedValue(new Error("upstream unavailable"));
+    const { runner } = makeWorkspaceRunner();
+    const lease = {} as import("../../src/orchestrator/concurrencyTracker.js").ConcurrencyLease;
+    const concurrencyTracker = {
+      acquireWhenAvailable: vi.fn().mockResolvedValue(lease),
+      release: vi.fn(),
+    };
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner, {
+      concurrencyTracker: concurrencyTracker as never,
+    }));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("upstream unavailable");
+
+    expect(concurrencyTracker.acquireWhenAvailable).toHaveBeenCalledOnce();
+    expect(concurrencyTracker.release).toHaveBeenCalledExactlyOnceWith(lease);
+    expect(mocks.provider.getChangeDiff).not.toHaveBeenCalled();
+    expect(runner.createWorkspace).not.toHaveBeenCalled();
+  });
+
   it("does not consume the review execution timeout while waiting for agent capacity", async () => {
     vi.useFakeTimers();
     try {
