@@ -68,7 +68,7 @@ export class ReviewProgressService {
   ): Promise<void> {
     const changes = await this.dependencies.getChangesForTask(task.taskId);
     if (changes.length === 0) {
-      if (task.externalChangeId !== externalChangeId) {
+      if (!matchesExternalChangeId(task.externalChangeId ?? "", externalChangeId)) {
         log.info(
           { taskId: task.taskId, integrationId, externalChangeId },
           "merged event does not match the task's legacy change id"

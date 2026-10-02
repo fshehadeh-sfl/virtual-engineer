@@ -230,6 +230,21 @@ describe("ReviewProgressService", () => {
     expect(dependencies.closeTicket).toHaveBeenCalledOnce();
   });
 
+  it("accepts qualified legacy merge event ids", async () => {
+    const task = makeTask({ externalChangeId: makeExternalChangeId("123") });
+    const dependencies = makeDependencies(task, {} as ReviewConnector, {
+      getChangesForTask: vi.fn().mockResolvedValue([]),
+    });
+    const service = new ReviewProgressService(dependencies);
+
+    await service.markChangeMerged(task, "github-1", "owner/repo#123");
+
+    expect(dependencies.transition).toHaveBeenCalledWith(task.taskId, "MERGED");
+    expect(dependencies.closeTicket).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "MERGED" })
+    );
+  });
+
   it("treats persisted merged rows as authoritative over stale open polling results", async () => {
     const task = makeTask();
     const mergedChange = makeChange(task, { status: "MERGED" });
