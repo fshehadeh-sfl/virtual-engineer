@@ -508,6 +508,42 @@ describe("SqliteStateStore — Phase 2: projects", () => {
     expect(adopted?.projectId).toBe(p2.id);
   });
 
+  it("deleteProject does not mutate soft-deleted task bindings", async () => {
+    const a = await makeAgent(store);
+    await makeIntegration(store, "redmine-soft-delete", "redmine");
+    const p = await store.createProject({ name: "P", type: "coding", agentId: a.id });
+    await store.setProjectTicketSource(p.id, {
+      integrationId: "redmine-soft-delete",
+      ticketProjectKey: "PLAT",
+    });
+
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("soft-1"));
+    await store.setTaskProjectId(taskId, p.id);
+    await store.transition(taskId, "FAILED");
+    await store.deleteTask(taskId);
+
+    const raw = (store as unknown as {
+      raw: { prepare(sql: string): { get(...args: unknown[]): Record<string, unknown> | undefined } };
+    }).raw;
+    const beforeDelete = raw.prepare(
+      "SELECT project_id, ticket_source_integration_id, ticket_source_project_key, deleted_at FROM tasks WHERE task_id = ?"
+    ).get(taskId);
+    expect(beforeDelete).toEqual({
+      project_id: p.id,
+      ticket_source_integration_id: null,
+      ticket_source_project_key: null,
+      deleted_at: expect.any(Number),
+    });
+
+    await store.deleteProject(p.id);
+
+    const afterDelete = raw.prepare(
+      "SELECT project_id, ticket_source_integration_id, ticket_source_project_key, deleted_at FROM tasks WHERE task_id = ?"
+    ).get(taskId);
+    expect(afterDelete).toEqual(beforeDelete);
+  });
+
   it("setProjectEnabled toggles and listProjects filters work", async () => {
     const a = await makeAgent(store);
     const p1 = await store.createProject({ name: "A", type: "coding", agentId: a.id, enabled: true });
