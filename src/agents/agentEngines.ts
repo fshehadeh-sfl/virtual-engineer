@@ -116,7 +116,7 @@ export function agentEngineUnavailableMessage(
     return undefined;
   }
   if (installed.includes(provider)) return undefined;
-  return `Agent engine "${AGENT_ENGINE_LABELS[provider]}" is not installed. Request it under Configuration → Agent engines, then rerun ./scripts/start.sh.`;
+  return `Agent engine "${AGENT_ENGINE_LABELS[provider]}" is not installed. Request it under Configuration → System → Agent engines, then rerun ./scripts/start.sh.`;
 }
 
 /** File-backed handshake between the admin UI and the host launcher. */
