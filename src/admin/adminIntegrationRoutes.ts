@@ -22,10 +22,11 @@ import { getAuthContext, getEffectivePermissions, requestCanAccessResource } fro
 import { can, canAccessResource } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
+import { agentEngineUnavailableMessage, type AgentEngine, type AgentEngineStateStore } from "../agents/agentEngines.js";
 
 const log = getLogger("admin-integrations");
 
-function filterVisibleIntegrations(req: IncomingMessage, integrations: Integration[]): Integration[] {
+export function filterVisibleIntegrations<T extends Pick<Integration, "id" | "ownerUserId">>(req: IncomingMessage, integrations: T[]): T[] {
   const perms = getEffectivePermissions(req);
   if (!perms) return integrations;
   const actorUserId = getAuthContext(req)?.userId ?? null;
@@ -69,10 +70,36 @@ export interface IntegrationRouteDeps {
   integrationStreams?: { getStatus(integrationId: string): unknown } | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   adminAuthSecret?: string | undefined;
+  /** Install state used to refuse agent integrations whose engine image is missing. */
+  agentEngines?: (Pick<AgentEngineStateStore, "readInstalled"> & Partial<Pick<AgentEngineStateStore, "recordIntegrationUsage">>) | undefined;
 }
 
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
+  const unavailableReason = (provider: string, installed: readonly AgentEngine[] | undefined): { unavailableReason?: string } => {
+    const message = agentEngineUnavailableMessage(provider, installed);
+    return message === undefined ? {} : { unavailableReason: message };
+  };
+
+  /** Writes 409 and returns false when the provider's agent engine is not installed. */
+  const ensureAgentEngineInstalled = async (res: ServerResponse, provider: string): Promise<boolean> => {
+    if (!deps.agentEngines) return true;
+    const message = agentEngineUnavailableMessage(provider, await deps.agentEngines.readInstalled());
+    if (message === undefined) return true;
+    writeJson(res, 409, { error: message });
+    return false;
+  };
+
+  /** Best-effort: keep the launcher's prune guard and engine selection in sync with integrations. */
+  const recordAgentEngineUsage = async (addedProvider?: string): Promise<void> => {
+    if (!deps.agentEngines?.recordIntegrationUsage || !deps.integrationStore) return;
+    try {
+      await deps.agentEngines.recordIntegrationUsage(await deps.integrationStore.getIntegrations(), addedProvider);
+    } catch (err: unknown) {
+      log.warn({ err }, "could not record agent engine usage");
+    }
+  };
+
   const discoverModels = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -118,8 +145,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   };
 
   // ─── Plugin discovery ─────────────────────────────────────────────────────
-  router.add("GET", "/api/admin/plugins", (_req, res, _params) => {
+  router.add("GET", "/api/admin/plugins", async (_req, res, _params) => {
     const descriptors = getAllProviderDescriptors();
+    const installedEngines = await deps.agentEngines?.readInstalled();
     writeJson(res, 200, {
       plugins: descriptors.map((d) => ({
         provider: d.provider,
@@ -135,6 +163,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         // the generic SSH auth UI (agent / generated-key / custom-path selector).
         supportsSshAuth: typeof d.generateSshKeyPair === "function",
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
+        ...unavailableReason(d.provider, installedEngines),
       })),
     });
     return Promise.resolve();
@@ -288,6 +317,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const provider = body["provider"] as ProviderId;
     const descriptor = getProviderDescriptor(provider);
     if (!descriptor) { writeJson(res, 400, { error: `Unknown provider: ${body["provider"] as string}` }); return; }
+    if (!await ensureAgentEngineInstalled(res, provider)) return;
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, asRecord(body["config"]), !descriptor.validateFullConfigOnCreate);
     if (!validatedConfig.ok) {
       writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" });
@@ -316,6 +346,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           log.warn({ id, provider, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
         }
       }
+      await recordAgentEngineUsage(provider);
       recordAudit(deps.auditStore, req, { action: "integration.create", targetType: "integration", targetId: id, details: { name: integration.name, provider } });
       writeJson(res, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
     } catch (err: unknown) {
@@ -464,6 +495,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     try {
       if (existing.enabled && deps.pluginManager) await deps.pluginManager.disablePlugin(id);
       await deps.integrationStore.deleteIntegration(id);
+      await recordAgentEngineUsage();
       recordAudit(deps.auditStore, req, { action: "integration.delete", targetType: "integration", targetId: id, details: { name: existing.name, provider: existing.provider } });
       writeJson(res, 200, { deleted: true });
     } catch (err: unknown) {
@@ -477,6 +509,8 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   router.add("PATCH", "/api/admin/integrations/:id/enable", async (req, res, params) => {
     if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const id = params["id"] ?? "";
+    const existing = await deps.integrationStore?.getIntegration(id);
+    if (existing && !await ensureAgentEngineInstalled(res, existing.provider)) return;
     try {
       await deps.pluginManager.enablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);

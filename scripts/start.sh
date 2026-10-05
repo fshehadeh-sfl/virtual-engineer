@@ -14,6 +14,7 @@
 #                        $HOME/.local/state/virtual-engineer) persistent local
 #                        OpenShell/Keycloak bootstrap state
 #   OPENSHELL_COMPUTE_DRIVER (default: docker; kubernetes is experimental)
+#   AGENT_ENGINES  extra agent engine images to build (e.g. "claude,aider" or "all")
 #   K3S_KUBECONFIG (default: /etc/rancher/k3s/k3s.yaml)  k3s admin kubeconfig path
 #   OPENSHELL_OIDC_ISSUER external Keycloak realm issuer URL; omit with the
 #     client secret to use the managed local Keycloak
@@ -64,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     --no-k3s-install)
       K3S_INSTALL=false; shift ;;
     --help|-h)
-      sed -n '2,17p' "$0"; exit 0 ;;
+      sed -n '2,18p' "$0"; exit 0 ;;
     *)
       error "Unknown argument: $1. Run ./scripts/start.sh --help" ;;
   esac
@@ -364,16 +365,17 @@ build_inputs_hash() {
 # agent build inputs are unchanged AND the image is present in host Docker and
 # in k3s containerd (verifies real state, so a stale marker never mis-skips).
 agent_image_present_in_k3s() {
+  local image="$1"
   local probe_name="ve-agent-image-probe"
   local docker_id runtime_id
-  docker_id=$(docker image inspect virtual-engineer-workspace:latest --format '{{.Id}}' 2>/dev/null) \
+  docker_id=$(docker image inspect "$image" --format '{{.Id}}' 2>/dev/null) \
     || return 1
   KUBECONFIG="$K3S_KUBECONFIG" kubectl delete pod "$probe_name" \
     -n ve-agents --ignore-not-found >/dev/null 2>&1 || true
   if ! KUBECONFIG="$K3S_KUBECONFIG" kubectl run "$probe_name" -n ve-agents \
-      --image=virtual-engineer-workspace:latest --image-pull-policy=Never \
+      --image="$image" --image-pull-policy=Never \
       --restart=Never \
-      --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"ve-agent-image-probe","image":"virtual-engineer-workspace:latest","imagePullPolicy":"Never","command":["/bin/sh","-c","exit 0"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+      --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"ve-agent-image-probe","image":"'"$image"'","imagePullPolicy":"Never","command":["/bin/sh","-c","exit 0"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
       >/dev/null 2>&1; then
     return 1
   fi
@@ -391,34 +393,90 @@ agent_image_present_in_k3s() {
 }
 
 agent_image_present_in_runtime() {
+  local image="$1"
   if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
-    docker image inspect virtual-engineer-workspace:latest >/dev/null 2>&1
+    docker image inspect "$image" >/dev/null 2>&1
   else
-    agent_image_present_in_k3s
+    agent_image_present_in_k3s "$image"
   fi
 }
 
-AGENT_HASH=$(build_inputs_hash Dockerfile.agent agent-worker)
-AGENT_MARKER="${DATA_DIR}/.agent-image-hash"
-if [[ "$(cat "$AGENT_MARKER" 2>/dev/null || true)" == "$AGENT_HASH" ]] \
-   && agent_image_present_in_runtime; then
-  info "Agent image up to date (sources unchanged, present in ${OPENSHELL_COMPUTE_DRIVER}) — skipping build."
+# Copilot lives in the base image (Dockerfile.agent target `workspace`); other
+# engines are opt-in images (target `<engine>`) selected in the admin UI
+# (Configuration → System → Agent engines) or via AGENT_ENGINES in .env.
+# Images are named after AGENT_CONTAINER_IMAGE, matching agentEngineImage() in
+# src/agents/agentEngines.ts. A digest-pinned base cannot be built locally, so
+# its images are treated as externally managed and install state is unknown.
+AGENT_BASE_IMAGE="${AGENT_CONTAINER_IMAGE:-virtual-engineer-workspace:latest}"
+AGENT_ENGINES_TO_BUILD=()
+if [[ "$AGENT_BASE_IMAGE" == *@* ]]; then
+  AGENT_IMAGES_MANAGED=0
+  warn "AGENT_CONTAINER_IMAGE is pinned by digest; skipping agent image builds and pruning."
+  rm -f "${DATA_DIR}/agent-engines.installed" "${DATA_DIR}/agent-engines.forced"
 else
-  info "Building agent image..."
-  docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
-  if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
-    echo "$AGENT_HASH" > "$AGENT_MARKER"
-  elif agent_image_present_in_k3s; then
-    info "The exact agent image is already present in k3s; skipping import."
-    echo "$AGENT_HASH" > "$AGENT_MARKER"
+  AGENT_IMAGES_MANAGED=1
+  AGENT_ENGINE_LIST=$(resolve_agent_engines "$DATA_DIR" "${AGENT_ENGINES:-}") \
+    || error "Invalid AGENT_ENGINES value."
+  mapfile -t AGENT_ENGINES_TO_BUILD <<< "$AGENT_ENGINE_LIST"
+  [[ ${#AGENT_ENGINES_TO_BUILD[@]} -gt 0 ]] || error "Could not resolve agent engines."
+  info "Agent engines: ${AGENT_ENGINES_TO_BUILD[*]}"
+fi
+
+AGENT_HASH=$(build_inputs_hash Dockerfile.agent agent-worker)
+for engine in "${AGENT_ENGINES_TO_BUILD[@]}"; do
+  if [[ "$engine" == "copilot" ]]; then
+    target="workspace"
+    marker="${DATA_DIR}/.agent-image-hash"
   else
-    info "Importing agent image into k3s containerd (k8s.io namespace)..."
-    if docker save virtual-engineer-workspace:latest | sudo k3s ctr -n k8s.io images import - >/dev/null; then
-      echo "$AGENT_HASH" > "$AGENT_MARKER"
+    target="$engine"
+    marker="${DATA_DIR}/.agent-image-hash-${engine}"
+  fi
+  image=$(agent_engine_image "$AGENT_BASE_IMAGE" "$engine")
+  if [[ "$(cat "$marker" 2>/dev/null || true)" == "$AGENT_HASH" ]] \
+     && agent_image_present_in_runtime "$image"; then
+    info "Agent image ${image} up to date — skipping build."
+    continue
+  fi
+  info "Building agent image ${image}..."
+  docker build -f Dockerfile.agent --target "$target" -t "$image" .
+  if [[ "$OPENSHELL_COMPUTE_DRIVER" == "docker" ]]; then
+    echo "$AGENT_HASH" > "$marker"
+  elif agent_image_present_in_k3s "$image"; then
+    info "The exact agent image ${image} is already present in k3s; skipping import."
+    echo "$AGENT_HASH" > "$marker"
+  else
+    info "Importing ${image} into k3s containerd (k8s.io namespace)..."
+    if docker save "$image" | sudo k3s ctr -n k8s.io images import - >/dev/null; then
+      echo "$AGENT_HASH" > "$marker"
     else
-    error "Could not import agent image into k3s."
+      error "Could not import agent image ${image} into k3s."
     fi
   fi
+done
+
+# Remove engine images that are no longer selected. Only an explicit admin
+# selection prunes; legacy instances without one keep every engine. Engines in
+# agent-engines.in-use were already added to the build list, so they survive.
+if [[ "$AGENT_IMAGES_MANAGED" -eq 1 && -f "${DATA_DIR}/agent-engines.requested" ]]; then
+  for engine in "${AGENT_ENGINE_CATALOG[@]}"; do
+    [[ "$engine" == "copilot" ]] && continue
+    [[ " ${AGENT_ENGINES_TO_BUILD[*]} " == *" $engine "* ]] && continue
+    image=$(agent_engine_image "$AGENT_BASE_IMAGE" "$engine")
+    rm -f "${DATA_DIR}/.agent-image-hash-${engine}"
+    if docker image inspect "$image" >/dev/null 2>&1; then
+      info "Removing unselected agent image ${image}..."
+      docker image rm "$image" >/dev/null || warn "Could not remove ${image}."
+    fi
+    if [[ "$OPENSHELL_COMPUTE_DRIVER" != "docker" ]] \
+       && sudo k3s ctr -n k8s.io images ls -q 2>/dev/null | grep -qx "docker.io/library/${image}"; then
+      sudo k3s ctr -n k8s.io images rm "docker.io/library/${image}" >/dev/null \
+        || warn "Could not remove ${image} from k3s."
+    fi
+  done
+fi
+if [[ "$AGENT_IMAGES_MANAGED" -eq 1 ]]; then
+  write_forced_agent_engines "$DATA_DIR" "${AGENT_ENGINES_TO_BUILD[@]}"
+  write_installed_agent_engines "$DATA_DIR" "${AGENT_ENGINES_TO_BUILD[@]}"
 fi
 
 # ─── Orchestrator image (always includes the OpenShell CLI) ───────────────────
@@ -642,7 +700,7 @@ else
   write_docker_gateway_config \
     "$OPENSHELL_GATEWAY_CONFIG_FILE" \
     "$OPENSHELL_OIDC_ISSUER" \
-    "virtual-engineer-workspace:latest" \
+    "$AGENT_BASE_IMAGE" \
     "$OPENSHELL_SUPERVISOR_IMAGE" \
     "$OPENSHELL_GW_LOCAL_PORT" \
     "${OPENSHELL_GATEWAY_PKI_DIR}/jwt"

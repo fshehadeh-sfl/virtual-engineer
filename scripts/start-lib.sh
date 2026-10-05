@@ -357,3 +357,107 @@ should_reuse_container() {
     && [[ "$running_image" == "$latest_image" ]] \
     && [[ "$stored_config_hash" == "$current_config_hash" ]]
 }
+# ─── Agent engines ───────────────────────────────────────────────────────────
+# Copilot ships in the base agent image; every other engine is an opt-in
+# image built from its own Dockerfile.agent target. Keep in sync with
+# AGENT_ENGINES in src/agents/agentEngines.ts.
+AGENT_ENGINE_CATALOG=(copilot claude aider goose codex gemini opencode cursor)
+
+agent_engine_image() {
+  local base="$1" engine="$2"
+  if [[ "$engine" == "copilot" ]]; then
+    printf '%s\n' "$base"
+    return
+  fi
+  local name="${base%:*}" tag="${base##*:}"
+  [[ "$base" == *:* && "$tag" != */* ]] || { name="$base"; tag="latest"; }
+  printf '%s-%s:%s\n' "$name" "$engine" "$tag"
+}
+
+# Prints the known engine ids listed in a handshake file (one per line,
+# `#` comments allowed); prints nothing when the file is absent.
+read_agent_engine_file() {
+  local file="$1" line known
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="${line//[[:space:]]/}"
+    [[ -n "$line" ]] || continue
+    for known in "${AGENT_ENGINE_CATALOG[@]}"; do
+      if [[ "$line" == "$known" ]]; then printf '%s\n' "$line"; fi
+    done
+  done < "$file"
+}
+
+# Prints the engines to install, one per line, in catalog order.
+#   $1 data dir holding agent-engines.requested (written by the admin UI) and
+#      agent-engines.in-use (engines agent integrations use; never pruned)
+#   $2 extra engines (AGENT_ENGINES: comma/space separated, or "all")
+# Without a saved selection, an existing database means an upgraded instance
+# that previously had every engine, so all are kept; a fresh install gets
+# Copilot only.
+resolve_agent_engines() {
+  local data_dir="$1" extra="${2:-}" requested_file="$1/agent-engines.requested"
+  local -A wanted=([copilot]=1)
+  local engine known
+  if [[ -f "$requested_file" ]]; then
+    while IFS= read -r engine; do
+      [[ -n "$engine" ]] && wanted[$engine]=1
+    done < <(read_agent_engine_file "$requested_file")
+  elif [[ -f "$data_dir/virtual-engineer.db" ]]; then
+    for engine in "${AGENT_ENGINE_CATALOG[@]}"; do wanted[$engine]=1; done
+  fi
+  while IFS= read -r engine; do
+    [[ -n "$engine" ]] || continue
+    if [[ -z "${wanted[$engine]:-}" ]]; then
+      echo "Keeping agent engine $engine: an agent integration still uses it." >&2
+      wanted[$engine]=1
+    fi
+  done < <(read_agent_engine_file "$data_dir/agent-engines.in-use")
+  for engine in ${extra//,/ }; do
+    if [[ "$engine" == "all" ]]; then
+      for known in "${AGENT_ENGINE_CATALOG[@]}"; do wanted[$known]=1; done
+      continue
+    fi
+    if [[ " ${AGENT_ENGINE_CATALOG[*]} " != *" $engine "* ]]; then
+      echo "Unknown agent engine in AGENT_ENGINES: $engine (expected: ${AGENT_ENGINE_CATALOG[*]} or all)" >&2
+      return 1
+    fi
+    wanted[$engine]=1
+  done
+  for engine in "${AGENT_ENGINE_CATALOG[@]}"; do
+    [[ -n "${wanted[$engine]:-}" ]] && printf '%s\n' "$engine"
+  done
+  return 0
+}
+
+# Records installed engines that were not requested (kept by AGENT_ENGINES or
+# because an integration uses them) so the admin UI does not report them as
+# pending removal. Without a saved selection nothing is forced.
+write_forced_agent_engines() {
+  local data_dir="$1"; shift
+  local target="$data_dir/agent-engines.forced" requested_file="$data_dir/agent-engines.requested"
+  local engine requested=""
+  if [[ -f "$requested_file" ]]; then
+    requested=" $(read_agent_engine_file "$requested_file" | tr '\n' ' ') "
+  fi
+  {
+    echo "# Written by scripts/start.sh: installed agent engines kept without a request."
+    if [[ -f "$requested_file" ]]; then
+      for engine in "$@"; do
+        [[ "$engine" == "copilot" || "$requested" == *" $engine "* ]] || printf '%s\n' "$engine"
+      done
+    fi
+  } > "$target.tmp"
+  mv "$target.tmp" "$target"
+}
+
+write_installed_agent_engines() {
+  local data_dir="$1"; shift
+  local target="$data_dir/agent-engines.installed"
+  {
+    echo "# Written by scripts/start.sh: agent engine images present after the last run."
+    printf '%s\n' "$@"
+  } > "$target.tmp"
+  mv "$target.tmp" "$target"
+}

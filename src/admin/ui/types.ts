@@ -216,6 +216,8 @@ export interface ApiPlugin {
   /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
   supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
+  /** Set when the provider's agent engine image is not installed. */
+  unavailableReason?: string;
 }
 
 export interface ApiAgent {
@@ -565,4 +567,22 @@ declare global {
   interface Window {
     __VE_ADMIN_BOOTSTRAP__?: VeAdminBootstrap;
   }
+}
+
+export interface ApiAgentEngine {
+  id: string;
+  label: string;
+  isDefault: boolean;
+  requested: boolean;
+  /** `null` when the launcher has not reported install state. */
+  installed: boolean | null;
+  /** Installed but kept by the launcher (`AGENT_ENGINES` or in use) without a request. */
+  forced: boolean;
+  integrationCount: number;
+}
+
+export interface ApiAgentEngines {
+  engines: ApiAgentEngine[];
+  installStateKnown: boolean;
+  rebuildRequired: boolean;
 }

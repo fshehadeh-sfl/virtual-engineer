@@ -6,6 +6,7 @@ import type {
   ReviewWorkspaceInput,
   TaskContext,
 } from "../interfaces.js";
+import { agentEngineImage } from "./agentEngines.js";
 
 const DEFAULT_AGENT_IMAGE = "virtual-engineer-workspace:latest";
 // The worker lives under /app because OpenShell's default filesystem policy
@@ -93,7 +94,9 @@ function buildBaseContainerSpec(
   egress: AgentEgressSpec | undefined
 ): AdapterContainerSpec {
   return {
-    image,
+    // The worker dispatches on AGENT_PROVIDER, so the sandbox must use the
+    // image that ships that engine.
+    image: agentEngineImage(image, env["AGENT_PROVIDER"]),
     env,
     command: [...AGENT_COMMAND],
     ...(egress !== undefined ? { egress } : {}),

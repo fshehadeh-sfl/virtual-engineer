@@ -3,6 +3,7 @@ import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import type { ApiConfig, ApiStatus } from "../../types.ts";
+import { AgentEnginesPanel } from "./AgentEnginesPanel.tsx";
 
 interface SystemSectionProps {
   config: ApiConfig["config"] | null;
@@ -55,6 +56,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [enginesDirty, setEnginesDirty] = useState(false);
 
   // Re-sync the form when the server-resolved values change (e.g. after a save,
   // an onRefresh(), or another admin updating settings) so inputs never show
@@ -85,9 +87,9 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     Number(ticketCloseRetrySeconds) * 1000 !== baseline.ticketCloseRetryMinTimeoutMs;
 
   useEffect(() => {
-    onDirtyChange(dirty);
+    onDirtyChange(dirty || enginesDirty);
     return () => onDirtyChange(false);
-  }, [dirty, onDirtyChange]);
+  }, [dirty, enginesDirty, onDirtyChange]);
 
   function validate(): EditableSettings | string {
     const seconds = Number(pollingSeconds);
@@ -133,7 +135,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
     try {
       await api.put("/api/admin/settings", patch);
       setBaseline(result);
-      onDirtyChange(false);
+      onDirtyChange(enginesDirty);
       setSaved(true);
       onRefresh();
     } catch (e) {
@@ -240,6 +242,8 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
           )}
         </div>
       </div>
+
+      <AgentEnginesPanel canWrite={canWrite} onDirtyChange={setEnginesDirty} />
 
       <div className="eyebrow" style={{ marginBottom: "8px" }}>Runtime</div>
       <div className="card" data-tour="system-runtime" style={{ overflow: "hidden" }}>
