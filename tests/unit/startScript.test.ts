@@ -885,6 +885,14 @@ describe("reset-instance.sh", () => {
     expect(result.trim()).toBe("hello world");
   });
 
+  it("clears the agent engine selection next to the database", () => {
+    const script = readFileSync("scripts/reset-instance.sh", "utf8");
+
+    expect(script).toContain('remove_path "${DATA_STATE_DIR}/agent-engines.requested"');
+    expect(script).toContain('remove_path "${DATA_STATE_DIR}/agent-engines.installed"');
+    expect(script).toContain('"${DATA_STATE_DIR}"/.agent-image-hash*');
+  });
+
   it("resolves the same kubeconfig start.sh uses before uninstalling the Helm release", () => {
     const script = readFileSync("scripts/reset-instance.sh", "utf8");
 

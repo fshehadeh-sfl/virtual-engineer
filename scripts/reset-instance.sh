@@ -18,8 +18,8 @@ usage() {
 Usage: ./scripts/reset-instance.sh [--refresh-env]
 
 Resets the local Virtual Engineer instance state without touching versioned
-files. This removes the local SQLite database, generated Gerrit SSH keys, and
-build/test artifacts.
+files. This removes the local SQLite database, the agent engine selection,
+generated Gerrit SSH keys, and build/test artifacts.
 
 Options:
   --refresh-env  Recreate .env from .env.example after cleanup
@@ -126,6 +126,12 @@ fi
 remove_path "$DATABASE_PATH"
 remove_path "${DATABASE_PATH}-wal"
 remove_path "${DATABASE_PATH}-shm"
+DATA_STATE_DIR="$(dirname "$DATABASE_PATH")"
+remove_path "${DATA_STATE_DIR}/agent-engines.requested"
+remove_path "${DATA_STATE_DIR}/agent-engines.installed"
+for marker in "${DATA_STATE_DIR}"/.agent-image-hash*; do
+  [[ -e "$marker" ]] && remove_path "$marker"
+done
 remove_path "./coverage"
 remove_path "./test-results"
 remove_path "./dist"
