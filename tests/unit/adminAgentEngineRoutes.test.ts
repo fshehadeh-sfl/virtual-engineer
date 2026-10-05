@@ -157,4 +157,15 @@ describe("Admin API — agent engine routes", () => {
     expect(r.status).toBe(200);
     expect(enablePlugin).toHaveBeenCalledWith("c1");
   });
+
+  it("flags plugins whose agent engine is not installed", async () => {
+    await writeFile(join(dir, "agent-engines.installed"), "copilot\ngoose\n");
+    const r = await rest(server, "/api/admin/plugins");
+    const plugins = r.body?.["plugins"] as Array<Record<string, unknown>>;
+    const reason = (provider: string): unknown => plugins.find((plugin) => plugin["provider"] === provider)?.["unavailableReason"];
+    expect(reason("aider")).toMatch(/not installed/u);
+    expect(reason("goose")).toBeUndefined();
+    expect(reason("copilot")).toBeUndefined();
+    expect(reason("gerrit")).toBeUndefined();
+  });
 });

@@ -22,7 +22,7 @@ import { getAuthContext, getEffectivePermissions, requestCanAccessResource } fro
 import { can, canAccessResource } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
-import { agentEngineUnavailableMessage, type AgentEngineStateStore } from "../agents/agentEngines.js";
+import { agentEngineUnavailableMessage, type AgentEngine, type AgentEngineStateStore } from "../agents/agentEngines.js";
 
 const log = getLogger("admin-integrations");
 
@@ -77,6 +77,11 @@ export interface IntegrationRouteDeps {
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
   /** Writes 409 and returns false when the provider's agent engine is not installed. */
+  const unavailableReason = (provider: string, installed: readonly AgentEngine[] | undefined): { unavailableReason?: string } => {
+    const message = agentEngineUnavailableMessage(provider, installed);
+    return message === undefined ? {} : { unavailableReason: message };
+  };
+
   const ensureAgentEngineInstalled = async (res: ServerResponse, provider: string): Promise<boolean> => {
     if (!deps.agentEngines) return true;
     const message = agentEngineUnavailableMessage(provider, await deps.agentEngines.readInstalled());
@@ -130,8 +135,9 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   };
 
   // ─── Plugin discovery ─────────────────────────────────────────────────────
-  router.add("GET", "/api/admin/plugins", (_req, res, _params) => {
+  router.add("GET", "/api/admin/plugins", async (_req, res, _params) => {
     const descriptors = getAllProviderDescriptors();
+    const installedEngines = await deps.agentEngines?.readInstalled();
     writeJson(res, 200, {
       plugins: descriptors.map((d) => ({
         provider: d.provider,
@@ -147,6 +153,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
         // the generic SSH auth UI (agent / generated-key / custom-path selector).
         supportsSshAuth: typeof d.generateSshKeyPair === "function",
         ...(d.oauth !== undefined ? { oauth: d.oauth } : {}),
+        ...unavailableReason(d.provider, installedEngines),
       })),
     });
     return Promise.resolve();

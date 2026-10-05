@@ -216,6 +216,8 @@ export interface ApiPlugin {
   /** True when the provider supports the generic SSH auth UI (agent / generated-key). */
   supportsSshAuth?: boolean;
   oauth?: ApiPluginOAuth;
+  /** Set when the provider's agent engine image is not installed. */
+  unavailableReason?: string;
 }
 
 export interface ApiAgent {

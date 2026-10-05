@@ -57,9 +57,13 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
   const [hovered, setHovered] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const normalizedSearch = search.trim().toLocaleLowerCase();
+  const orderedPlugins = [
+    ...plugins.filter((plugin) => plugin.unavailableReason === undefined),
+    ...plugins.filter((plugin) => plugin.unavailableReason !== undefined),
+  ];
   const filteredPlugins = normalizedSearch.length === 0
-    ? plugins
-    : plugins.filter((plugin) => {
+    ? orderedPlugins
+    : orderedPlugins.filter((plugin) => {
         const capabilityTerms = plugin.domainCapabilities.flatMap((capability) => [
           capability,
           CAPABILITY_LABEL[capability] ?? capability,
@@ -93,10 +97,13 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
       {filteredPlugins.length > 0 ? (
         <div className="config-provider-grid">
           {filteredPlugins.map((plugin) => {
-            const active = hovered === plugin.provider;
+            const unavailable = plugin.unavailableReason !== undefined;
+            const active = !unavailable && hovered === plugin.provider;
             return (
               <button
                 key={plugin.provider}
+                disabled={unavailable}
+                title={plugin.unavailableReason}
                 onClick={() => onSelect(plugin.provider)}
                 onMouseEnter={() => setHovered(plugin.provider)}
                 onMouseLeave={() => setHovered(null)}
@@ -105,7 +112,8 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
                   gap: "10px", padding: "20px 12px 18px", borderRadius: "12px",
                   background: active ? "var(--panel-2)" : "var(--panel)",
                   border: active ? "1px solid var(--accent-line)" : "1px solid var(--border-soft)",
-                  cursor: "pointer", textAlign: "center",
+                  cursor: unavailable ? "not-allowed" : "pointer", textAlign: "center",
+                  opacity: unavailable ? 0.55 : 1,
                   transition: "border-color .12s, background .12s, box-shadow .12s",
                   boxShadow: active ? "0 0 0 3px var(--accent-soft)" : "none",
                 }}
@@ -115,6 +123,9 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
                 {plugin.domainCapabilities.slice(0, 2).map((capability) => (
                   <CapabilityBadge key={capability} capability={capability} />
                 ))}
+                {unavailable && (
+                  <span className="mono" style={{ fontSize: "11px", color: "var(--warn)" }}>Not installed</span>
+                )}
               </button>
             );
           })}
