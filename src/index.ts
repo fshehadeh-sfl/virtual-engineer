@@ -23,6 +23,8 @@ import { PollingLoop } from "./orchestrator/pollingLoop.js";
 import { createConcurrencyTracker } from "./orchestrator/concurrencyTracker.js";
 import { TaskLifecycleCoordinator } from "./orchestrator/taskLifecycleCoordinator.js";
 import { createAdminServer } from "./admin/adminServer.js";
+import { AgentEngineStateStore, initializeAgentEngineState } from "./agents/agentEngines.js";
+import { dirname } from "node:path";
 import { closeAdminServer } from "./admin/closeAdminServer.js";
 import { startAdminServer } from "./admin/startAdminServer.js";
 import { buildAdminProviderSummaries } from "./admin/providerSummary.js";
@@ -70,6 +72,20 @@ async function main(): Promise<void> {
   const orphanedTaskCount = await stateStore.reconcileOrphanedActiveTasks();
   if (orphanedTaskCount > 0) {
     log.warn({ orphanedTaskCount }, "failed tasks orphaned by a previous orchestrator restart");
+  }
+
+  // ─── Agent engine images ──────────────────────────────────────────────────────
+  // The launcher builds only requested engine images; the selection and the
+  // launcher's install report live next to the database.
+  const agentEngines = new AgentEngineStateStore(dirname(config.databasePath));
+  try {
+    const engineState = await initializeAgentEngineState(agentEngines, await stateStore.getIntegrations());
+    log.info({ requested: engineState.requested, installed: engineState.installed ?? "unknown" }, "agent engines");
+    for (const { integrationName, engine } of engineState.missing) {
+      log.warn({ integrationName, engine }, "agent integration uses an engine whose image is not installed; rerun ./scripts/start.sh");
+    }
+  } catch (err: unknown) {
+    log.warn({ err }, "could not initialize agent engine selection; engine images are managed manually");
   }
 
   // ─── Editable workflow settings ───────────────────────────────────────────────
@@ -523,6 +539,7 @@ async function main(): Promise<void> {
         healthy: () => openShellClient.gatewayHealthy(),
         address: openShellGateway,
       },
+      agentEngines,
     });
 
     await startAdminServer(adminServer, config.adminApiPort, config.adminApiHost);

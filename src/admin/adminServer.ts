@@ -31,6 +31,8 @@ import { registerDenialRoutes } from "./adminDenialRoutes.js";
 import { registerSettingsRoutes, type SettingsController } from "./adminSettingsRoutes.js";
 import { registerWebhookRoutes } from "./adminWebhookRoutes.js";
 import { registerIntegrationRoutes } from "./adminIntegrationRoutes.js";
+import { registerAgentEngineRoutes } from "./adminAgentEngineRoutes.js";
+import type { AgentEngineStateStore } from "../agents/agentEngines.js";
 import { registerAuthRoutes, type AuthRouteAuditStore, type AuthRouteUserStore } from "./adminAuthRoutes.js";
 import { registerAuditRoutes, type AuditReadStore } from "./adminAuditRoutes.js";
 import { registerPolicyRoutes, type PolicyRoutesStore } from "./adminPoliciesRoutes.js";
@@ -191,6 +193,11 @@ export interface AdminServerDependencies {
   denialStore?: import("../state/stores/denialStore.js").DenialStoreApi | undefined;
   /** OpenShell gateway health probe surfaced at GET /api/admin/runtime/status. */
   runtimeGateway?: { healthy(): Promise<boolean>; address: string | undefined } | undefined;
+  /**
+   * When provided, mounts `GET/PUT /api/admin/agent-engines` and blocks
+   * creating/enabling agent integrations whose engine image is not installed.
+   */
+  agentEngines?: AgentEngineStateStore | undefined;
 }
 
 /** Derive provider-specific URLs from active plugin manager integrations. */
@@ -491,6 +498,12 @@ function buildApiRouter(dependencies: AdminServerDependencies, authRuntime: Admi
     integrationStreams: dependencies.integrationStreams,
     onIntegrationUpdated: dependencies.onIntegrationUpdated,
     adminAuthSecret: dependencies.config.adminAuthSecret,
+    agentEngines: dependencies.agentEngines,
+  });
+  registerAgentEngineRoutes(router, {
+    agentEngines: dependencies.agentEngines,
+    integrationStore: dependencies.integrationStore,
+    auditStore,
   });
   registerAgentRoutes(router, {
     pluginManager: dependencies.pluginManager,

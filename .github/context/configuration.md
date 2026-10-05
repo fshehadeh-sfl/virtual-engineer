@@ -52,7 +52,8 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 
 | Var | Default | Notes |
 |---|---|---|
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Image the OpenShell sandbox is created from (`sandbox create --from`). |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image the OpenShell sandbox is created from (`sandbox create --from`). It ships only Copilot; every other engine uses `<name>-<engine>:<tag>` derived from it (`agentEngineImage()` in `src/agents/agentEngines.ts`). |
+| `AGENT_ENGINES` | _(empty)_ | `scripts/start.sh` only. Extra engine images to build on top of the admin selection: comma-separated engine ids or `all`. Unknown ids abort the launcher. |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
 
 There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.

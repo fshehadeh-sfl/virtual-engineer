@@ -3,6 +3,7 @@ import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
 import type { ApiConfig, ApiStatus } from "../../types.ts";
+import { AgentEnginesPanel } from "./AgentEnginesPanel.tsx";
 
 interface SystemSectionProps {
   config: ApiConfig["config"] | null;
@@ -240,6 +241,8 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
           )}
         </div>
       </div>
+
+      <AgentEnginesPanel canWrite={canWrite} />
 
       <div className="eyebrow" style={{ marginBottom: "8px" }}>Runtime</div>
       <div className="card" data-tour="system-runtime" style={{ overflow: "hidden" }}>

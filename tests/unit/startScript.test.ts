@@ -166,6 +166,59 @@ describe("install.sh bootstrap", () => {
   });
 });
 
+describe("start.sh agent engine selection", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function dataDir(files: Record<string, string> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "ve-engines-"));
+    dirs.push(dir);
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+    return dir;
+  }
+  const resolve = (dir: string, extra = ""): string =>
+    runHelper('resolve_agent_engines "$1" "$2" | tr "\\n" " "', [dir, extra]).trim();
+
+  it("installs only Copilot on a fresh instance", () => {
+    expect(resolve(dataDir())).toBe("copilot");
+  });
+
+  it("keeps every engine for an upgraded instance without a saved selection", () => {
+    expect(resolve(dataDir({ "virtual-engineer.db": "" }))).toBe("copilot claude aider goose codex gemini opencode cursor");
+  });
+
+  it("follows the admin selection and adds AGENT_ENGINES extras", () => {
+    const dir = dataDir({ "virtual-engineer.db": "", "agent-engines.requested": "# saved\ncursor\nbogus\n" });
+    expect(resolve(dir)).toBe("copilot cursor");
+    expect(resolve(dir, "aider, goose")).toBe("copilot aider goose cursor");
+    expect(resolve(dir, "all")).toBe("copilot claude aider goose codex gemini opencode cursor");
+  });
+
+  it("rejects unknown AGENT_ENGINES values", () => {
+    expect(() => runHelper('resolve_agent_engines "$1" "$2"', [dataDir(), "nope"])).toThrow();
+  });
+
+  it("derives per-engine image names from the base image", () => {
+    expect(runHelper('agent_engine_image "$1" "$2"', ["virtual-engineer-workspace:latest", "copilot"])).toBe("virtual-engineer-workspace:latest");
+    expect(runHelper('agent_engine_image "$1" "$2"', ["virtual-engineer-workspace:latest", "aider"])).toBe("virtual-engineer-workspace-aider:latest");
+    expect(runHelper('agent_engine_image "$1" "$2"', ["localhost:5000/ve", "codex"])).toBe("localhost:5000/ve-codex:latest");
+  });
+
+  it("reports installed engines for the orchestrator", () => {
+    const dir = dataDir();
+    runHelper('write_installed_agent_engines "$1" copilot goose', [dir]);
+    expect(readFileSync(join(dir, "agent-engines.installed"), "utf8")).toMatch(/\ncopilot\ngoose\n$/u);
+  });
+
+  it("builds and prunes engine images in start.sh", () => {
+    const script = readFileSync("scripts/start.sh", "utf8");
+    expect(script).toContain('docker build -f Dockerfile.agent --target "$target" -t "$image" .');
+    expect(script).toContain('write_installed_agent_engines "$DATA_DIR"');
+    expect(script).toContain('docker image rm "$image"');
+  });
+});
+
 describe("start.sh helpers", () => {
   it.each([
     { value: "", expected: "2g" },
@@ -692,11 +745,20 @@ describe("OpenShell deployment contract", () => {
     expect(dockerfile).toContain("npm install -g opencode-ai@1.18.16");
   });
 
+  it("keeps the default agent image Copilot-only with opt-in engine targets", () => {
+    const dockerfile = readFileSync("Dockerfile.agent", "utf8");
+
+    for (const engine of ["claude", "aider", "goose", "codex", "gemini", "opencode", "cursor"]) {
+      expect(dockerfile).toContain(`FROM base AS ${engine}`);
+    }
+    expect(dockerfile.trimEnd().split("\n").filter((line) => line.startsWith("FROM ")).at(-1)).toBe("FROM base AS workspace");
+  });
+
   it("materializes the Cursor CLI outside root's home", () => {
     const dockerfile = readFileSync("Dockerfile.agent", "utf8");
 
     expect(dockerfile).toContain(
-      'cp -a "$(dirname "$cursor_bin")/." /usr/local/lib/cursor-agent/'
+      "| tar --strip-components=1 -xzf - -C /usr/local/lib/cursor-agent"
     );
     expect(dockerfile).toContain(
       "ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent"

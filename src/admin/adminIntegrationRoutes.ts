@@ -22,6 +22,7 @@ import { getAuthContext, getEffectivePermissions, requestCanAccessResource } fro
 import { can, canAccessResource } from "./authorization/policyEngine.js";
 import type { Router } from "./router.js";
 import { scanIntegrationWorkspace, WorkspaceScanError } from "../workspace/workspaceScanService.js";
+import { agentEngineUnavailableMessage, type AgentEngineStateStore } from "../agents/agentEngines.js";
 
 const log = getLogger("admin-integrations");
 
@@ -69,10 +70,21 @@ export interface IntegrationRouteDeps {
   integrationStreams?: { getStatus(integrationId: string): unknown } | undefined;
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   adminAuthSecret?: string | undefined;
+  /** Install state used to refuse agent integrations whose engine image is missing. */
+  agentEngines?: Pick<AgentEngineStateStore, "readInstalled"> | undefined;
 }
 
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
+  /** Writes 409 and returns false when the provider's agent engine is not installed. */
+  const ensureAgentEngineInstalled = async (res: ServerResponse, provider: string): Promise<boolean> => {
+    if (!deps.agentEngines) return true;
+    const message = agentEngineUnavailableMessage(provider, await deps.agentEngines.readInstalled());
+    if (message === undefined) return true;
+    writeJson(res, 409, { error: message });
+    return false;
+  };
+
   const discoverModels = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -288,6 +300,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     const provider = body["provider"] as ProviderId;
     const descriptor = getProviderDescriptor(provider);
     if (!descriptor) { writeJson(res, 400, { error: `Unknown provider: ${body["provider"] as string}` }); return; }
+    if (!await ensureAgentEngineInstalled(res, provider)) return;
     const validatedConfig = validateIntegrationConfig(descriptor.configSchema, asRecord(body["config"]), !descriptor.validateFullConfigOnCreate);
     if (!validatedConfig.ok) {
       writeJson(res, 400, { error: validatedConfig.message || "Invalid integration config" });
@@ -477,6 +490,8 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
   router.add("PATCH", "/api/admin/integrations/:id/enable", async (req, res, params) => {
     if (!requireStore(deps.pluginManager, res, "Plugin manager not available")) return;
     const id = params["id"] ?? "";
+    const existing = await deps.integrationStore?.getIntegration(id);
+    if (existing && !await ensureAgentEngineInstalled(res, existing.provider)) return;
     try {
       await deps.pluginManager.enablePlugin(id);
       const integration = await deps.integrationStore?.getIntegration(id);

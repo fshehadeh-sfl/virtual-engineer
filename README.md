@@ -92,6 +92,12 @@ docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 npm run dev
 ```
 
+The default agent image ships only Copilot. Build other engines as separate
+targets when needed, for example
+`docker build -f Dockerfile.agent --target aider -t virtual-engineer-workspace-aider:latest .`.
+With `./scripts/start.sh`, select engines in **Configuration → System → Agent
+engines** (or set `AGENT_ENGINES`) and rerun the script to build them.
+
 `npm run dev` starts the host orchestrator only. Configure
 `OPENSHELL_GATEWAY` with an existing CLI profile or
 `OPENSHELL_GATEWAY_ENDPOINT` with a reachable endpoint before running it.

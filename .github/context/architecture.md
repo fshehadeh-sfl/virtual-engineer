@@ -203,7 +203,7 @@ Pino, module-scoped via `getLogger(...)`. Pretty in development, JSON in product
 ## Deployment
 
 - Orchestrator: long-running host Node process (`npm run dev`, systemd, PM2, or containerized orchestrator image)
-- Agent runtime: per-cycle OpenShell sandbox from the image built by [Dockerfile.agent](../../Dockerfile.agent) (`AGENT_CONTAINER_IMAGE`, default `virtual-engineer-workspace:latest`); the image must contain a `sandbox` user/group whose home is `/sandbox`
+- Agent runtime: per-cycle OpenShell sandbox from the image built by [Dockerfile.agent](../../Dockerfile.agent) (`AGENT_CONTAINER_IMAGE`, default `virtual-engineer-workspace:latest`, Copilot only; other engines run from opt-in `<name>-<engine>:<tag>` images — see [agents.md](modules/agents.md#agent-engine-images)); every image must contain a `sandbox` user/group whose home is `/sandbox`
 - Optional [scripts/start.sh](../../scripts/start.sh) containerises the orchestrator and brings up the OpenShell gateway. `OPENSHELL_COMPUTE_DRIVER` defaults to `docker` (gateway-owned `openshell-docker` bridge); `kubernetes` (k3s/Helm) is experimental. Docker appears only as the gateway's compute driver — VE never runs `docker run` for an agent.
 
 ## Related docs

@@ -15,7 +15,6 @@
  * (api-key integrations) or `CLAUDE_CODE_OAUTH_TOKEN` (subscription
  * integrations). The host adapter injects exactly one of these.
  */
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { NETWORK_DISALLOWED_TOOLS } from '../networkGuard.js';
 import { emitEvent } from './events.js';
@@ -25,6 +24,21 @@ import {
   appendSubmissionInstruction,
   buildSubmissionMcpConfig,
 } from '../mcpSubmission.js';
+
+/**
+ * The SDK ships only in the `claude` engine image, so it is imported on first
+ * use instead of at worker start-up (the Copilot-only base image omits it).
+ */
+async function loadClaudeAgentSdk(): Promise<typeof import('@anthropic-ai/claude-agent-sdk')> {
+  try {
+    return await import('@anthropic-ai/claude-agent-sdk');
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Claude Agent SDK is not available in this sandbox image; install the "claude" agent engine (${reason})`,
+    );
+  }
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
@@ -169,6 +183,7 @@ export async function runClaudeAgent(
 ): Promise<AgentRun> {
   const { model, cwd, timeoutMs, mode } = options;
   const modelLabel = model || 'cli-default';
+  const { query } = await loadClaudeAgentSdk();
 
   emitEvent('session.start', { model: modelLabel, mode, workingDirectory: cwd });
   process.stderr.write(`starting Claude Agent SDK (mode=${mode}, model=${modelLabel})\n`);

@@ -566,3 +566,19 @@ declare global {
     __VE_ADMIN_BOOTSTRAP__?: VeAdminBootstrap;
   }
 }
+
+export interface ApiAgentEngine {
+  id: string;
+  label: string;
+  isDefault: boolean;
+  requested: boolean;
+  /** `null` when the launcher has not reported install state. */
+  installed: boolean | null;
+  integrationCount: number;
+}
+
+export interface ApiAgentEngines {
+  engines: ApiAgentEngine[];
+  installStateKnown: boolean;
+  rebuildRequired: boolean;
+}

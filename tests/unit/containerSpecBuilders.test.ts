@@ -137,6 +137,20 @@ describe("containerSpecBuilders", () => {
     expect(second.command).toEqual(first.command);
   });
 
+  it("selects the engine image from AGENT_PROVIDER", () => {
+    const codegen = buildCodegenContainerSpec(makeContext(), {
+      providerEnv: { AGENT_PROVIDER: "aider" },
+      maxRepositoryContextBytes: 1,
+      maxCommitsPerCycle: 1,
+    });
+    const review = buildReviewContainerSpec(makeReviewInput(), {
+      providerEnv: { AGENT_PROVIDER: "cursor" },
+    });
+
+    expect(codegen.image).toBe("agent-aider:test");
+    expect(review.image).toBe("review-cursor:test");
+  });
+
   it("uses the default image for review containers", () => {
     const input = makeReviewInput();
     delete input.containerImage;
@@ -155,6 +169,7 @@ describe("containerSpecBuilders", () => {
     };
     const adapters = [
       {
+        engine: "copilot",
         codegen: new CopilotAdapter(config).buildContainerSpec(context, {
           GITHUB_TOKEN: "copilot-token",
         }),
@@ -163,6 +178,7 @@ describe("containerSpecBuilders", () => {
         }),
       },
       {
+        engine: "claude",
         codegen: new ClaudeAdapter(config).buildContainerSpec(context, {
           ANTHROPIC_API_KEY: "claude-token",
         }),
@@ -171,6 +187,7 @@ describe("containerSpecBuilders", () => {
         }),
       },
       {
+        engine: "aider",
         codegen: new AiderAdapter(config).buildContainerSpec(context, {
           OPENAI_API_KEY: "aider-token",
         }),
@@ -179,6 +196,7 @@ describe("containerSpecBuilders", () => {
         }),
       },
       {
+        engine: "goose",
         codegen: new GooseAdapter(config).buildContainerSpec(context, {
           ANTHROPIC_API_KEY: "goose-token",
         }),
@@ -187,6 +205,7 @@ describe("containerSpecBuilders", () => {
         }),
       },
       {
+        engine: "codex",
         codegen: new CodexAdapter(config).buildContainerSpec(context, {
           CODEX_API_KEY: "codex-token",
         }),
@@ -195,6 +214,7 @@ describe("containerSpecBuilders", () => {
         }),
       },
       {
+        engine: "opencode",
         codegen: new OpenCodeAdapter(config).buildContainerSpec(context, {
           ANTHROPIC_API_KEY: "opencode-token",
         }),
@@ -204,9 +224,10 @@ describe("containerSpecBuilders", () => {
       },
     ];
 
-    for (const { codegen, review } of adapters) {
+    for (const { engine, codegen, review } of adapters) {
+      const suffix = engine === "copilot" ? "" : `-${engine}`;
       expect(codegen).toMatchObject({
-        image: "agent:test",
+        image: `agent${suffix}:test`,
         command: ["node", "/app/agent-worker/dist/index.js"],
       });
       expect(codegen.env).toMatchObject({
@@ -219,7 +240,7 @@ describe("containerSpecBuilders", () => {
         MAX_COMMITS_PER_CYCLE: "7",
       });
       expect(review).toMatchObject({
-        image: "review:test",
+        image: `review${suffix}:test`,
         command: ["node", "/app/agent-worker/dist/index.js"],
       });
       expect(review.env).toMatchObject({

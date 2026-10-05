@@ -1,10 +1,41 @@
-FROM node:24-bookworm-slim
+# Agent sandbox images.
+#
+# The default target (`workspace`, the last stage) is the slim Copilot-only
+# image `virtual-engineer-workspace:latest`. Every other agent engine is an
+# opt-in target built FROM that base and tagged
+# `virtual-engineer-workspace-<engine>:latest`, e.g.:
+#
+#   docker build -f Dockerfile.agent --target aider \
+#     -t virtual-engineer-workspace-aider:latest .
+#
+# scripts/start.sh builds only the engines requested in the admin UI
+# (data/agent-engines.requested) plus AGENT_ENGINES. The orchestrator picks the
+# image whose engine matches the sandbox's AGENT_PROVIDER. Every engine keeps
+# its CLI at the same /usr/local/bin path the egress policies reference.
+# Package-manager caches are removed in the RUN step that creates them so they
+# never land in a layer.
+
+# ─── Worker build (not shipped) ──────────────────────────────────────────────
+FROM node:24-bookworm-slim AS worker-build
+ENV NPM_CONFIG_UPDATE_NOTIFIER=false
+COPY agent-worker/ /app/agent-worker/
+# The Claude Agent SDK (and its platform binaries) is moved aside so only the
+# `claude` engine image ships it; the worker imports it lazily.
+RUN npm --prefix /app/agent-worker ci --no-fund \
+  && npm --prefix /app/agent-worker run build \
+  && npm --prefix /app/agent-worker prune --omit=dev --no-fund \
+  && mkdir -p /engine-modules \
+  && mv /app/agent-worker/node_modules/@anthropic-ai /engine-modules/@anthropic-ai \
+  && npm cache clean --force
+
+# ─── Base: Copilot-only workspace ────────────────────────────────────────────
+FROM node:24-bookworm-slim AS base
 
 # Suppress interactive prompts from apt-get and npm
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false
 
-# Install required tools: git, SSH client, GitHub CLI, curl, jq.
+# Install required tools: git, SSH client, curl, jq.
 # iproute2 provides the `ip` binary the OpenShell supervisor needs to create the
 # sandbox network namespace (proxy-mode isolation); without it the sandbox agent
 # container crash-loops with "trusted ip helper not found".
@@ -20,70 +51,6 @@ RUN groupadd --system sandbox \
   && useradd --system --gid sandbox --create-home \
     --home-dir /sandbox --shell /bin/bash sandbox
 
-# Install Python 3 + Aider (https://aider.chat) for the `aider` agent provider.
-# Aider wraps any LLM backend via litellm; it is installed as an isolated uv tool
-# so its dependencies don't clash with the Node toolchain. The binary is symlinked
-# onto /usr/local/bin so the agent-worker subprocess spawn resolves it on PATH.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -LsSf https://astral.sh/uv/install.sh | UV_VERSION=0.11.30 sh \
-  && /root/.local/bin/uv tool install --python python3 aider-chat==0.86.2 \
-  && ln -s /root/.local/bin/aider /usr/local/bin/aider
-ENV PATH="/root/.local/bin:${PATH}"
-
-# Install Goose CLI (https://goose-docs.ai) for the `goose` agent provider.
-# Goose is a Rust CLI from the AAIF that wraps any LLM provider. It is installed
-# via the official installer with a pinned version for reproducible builds. The
-# binary lands in /usr/local/bin so the agent-worker subprocess spawn resolves it
-# on PATH. CONFIGURE=false skips the interactive `goose configure` flow; the
-# agent-worker writes the config.yaml into the HOME volume at runtime. bzip2 is
-# required because the installer downloads a .tar.bz2 release archive; libxcb1
-# provides libxcb.so.1, a shared library the goose binary links against.
-#
-# The installer script is pinned to the v1.21.1 release tag (not the `stable`
-# channel) so the script itself is immutable and builds are reproducible.
-RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSL https://github.com/aaif-goose/goose/releases/download/v1.21.1/download_cli.sh \
-    | GOOSE_VERSION=1.21.1 CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash
-
-# Install the Codex CLI (https://github.com/openai/codex) for the `codex` agent
-# provider. Codex is a standalone Rust binary distributed as an npm package; the
-# global npm bin directory is already on PATH for the node:24-bookworm-slim base
-# image, so no extra symlink step is needed. `NPM_CONFIG_UPDATE_NOTIFIER=false`
-# (set above) suppresses the interactive update banner during CI builds.
-RUN npm install -g @openai/codex
-
-# Install the Gemini CLI (https://github.com/google-gemini/gemini-cli) for the
-# `gemini` agent provider. Gemini CLI is a Node package; the global npm bin
-# directory is already on PATH, so no extra symlink step is needed.
-RUN npm install -g @google/gemini-cli
-
-# Install the OpenCode CLI (https://opencode.ai) for the `opencode` agent
-# provider. Like Codex, OpenCode is a standalone binary distributed as an npm
-# package; the global npm bin directory is already on PATH, so no extra
-# symlink step is needed. Pin the version because CLI flags, config, and JSONL
-# event shapes are runtime contracts consumed by the worker.
-RUN npm install -g opencode-ai@1.18.16
-
-# Install the Cursor CLI (https://cursor.com/cli) for the `cursor` agent
-# provider. Cursor ships no npm package; its official installer downloads a
-# platform-specific binary and symlinks it to `~/.local/bin/{agent,cursor-agent}`
-# (both names) for whichever user runs it — here, root during the image build.
-# The installer has no documented version-pin option (it always fetches
-# whatever release its own script currently embeds), unlike Goose's pinned
-# release tag — a reproducibility gap to revisit if Cursor adds one. The
-# complete version bundle is copied under /usr/local/lib and linked from
-# /usr/local/bin so the unprivileged `sandbox` user does not need to traverse
-# root's mode-0700 home directory. The whole bundle is required because the
-# launcher loads sibling JavaScript chunks at runtime.
-RUN curl https://cursor.com/install -fsS | bash \
-  && cursor_bin="$(readlink -f /root/.local/bin/cursor-agent)" \
-  && install -d /usr/local/lib/cursor-agent \
-  && cp -a "$(dirname "$cursor_bin")/." /usr/local/lib/cursor-agent/ \
-  && ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
 # Default SSH config — accepts unknown host keys as a fallback for ephemeral
 # sandboxes. When sshKnownHostsPath is configured on the Gerrit integration,
 # host-side git (HostGitExecutor / buildGitEnv) overrides GIT_SSH_COMMAND with
@@ -103,11 +70,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && rm -rf /var/lib/apt/lists/*
 
 # Keep the runtime under /app, which OpenShell's default filesystem policy
-# permits as read-only executable content.
-COPY agent-worker/ /app/agent-worker/
-RUN npm --prefix /app/agent-worker ci --no-fund \
-  && npm --prefix /app/agent-worker run build \
-  && npm --prefix /app/agent-worker prune --omit=dev --no-fund
+# permits as read-only executable content. The Copilot SDK (with its bundled
+# CLI) is the only engine dependency in the base.
+COPY --from=worker-build /app/agent-worker/ /app/agent-worker/
 
 # Set working directory. The OpenShell sandbox overrides the working directory
 # to `/sandbox` (its writable dir under the default policy); this WORKDIR is only
@@ -116,3 +81,83 @@ WORKDIR /workspace
 
 # Default shell
 CMD ["/bin/bash"]
+
+# ─── Engine: Claude ──────────────────────────────────────────────────────────
+# Ships the Claude Agent SDK (and its bundled Claude Code binary) that the
+# worker build moved aside.
+FROM base AS claude
+COPY --from=worker-build /engine-modules/@anthropic-ai/ /app/agent-worker/node_modules/@anthropic-ai/
+
+# ─── Engine: Aider ───────────────────────────────────────────────────────────
+# Aider (https://aider.chat) wraps any LLM backend via litellm. It is installed
+# as an isolated uv tool under /opt so its dependencies don't clash with the
+# Node toolchain and the unprivileged `sandbox` user can execute it (root's
+# home is mode 0700). uv itself is only needed at build time.
+FROM base AS aider
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/0.11.30/install.sh \
+    | env UV_INSTALL_DIR=/tmp/uv UV_NO_MODIFY_PATH=1 sh \
+  && UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin UV_NO_CACHE=1 \
+    /tmp/uv/uv tool install --python python3 aider-chat==0.86.2 \
+  && rm -rf /tmp/uv /root/.cache \
+  && test -x /usr/local/bin/aider
+
+# ─── Engine: Goose ───────────────────────────────────────────────────────────
+# Goose (https://goose-docs.ai) is a Rust CLI installed via the official
+# installer pinned to the v1.21.1 release tag (not the `stable` channel) so the
+# script itself is immutable. CONFIGURE=false skips the interactive
+# `goose configure` flow; the agent-worker writes config.yaml at runtime.
+# bzip2 unpacks the .tar.bz2 release archive; libxcb1 provides libxcb.so.1,
+# which the goose binary links against.
+FROM base AS goose
+RUN apt-get update && apt-get install -y --no-install-recommends bzip2 libxcb1 \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://github.com/aaif-goose/goose/releases/download/v1.21.1/download_cli.sh \
+    | GOOSE_VERSION=1.21.1 CONFIGURE=false GOOSE_BIN_DIR=/usr/local/bin bash \
+  && rm -rf /root/.cache /tmp/*
+
+# ─── Engine: Codex ───────────────────────────────────────────────────────────
+# Codex (https://github.com/openai/codex) is a Rust binary distributed as an
+# npm package; the global npm bin directory is already on PATH. Pinned because
+# CLI flags and JSONL event shapes are runtime contracts consumed by the worker.
+FROM base AS codex
+RUN npm install -g @openai/codex@0.155.1 && npm cache clean --force
+
+# ─── Engine: Gemini CLI ──────────────────────────────────────────────────────
+# Gemini CLI (https://github.com/google-gemini/gemini-cli) is a Node package.
+FROM base AS gemini
+RUN npm install -g @google/gemini-cli@0.60.0 && npm cache clean --force
+
+# ─── Engine: OpenCode ────────────────────────────────────────────────────────
+# OpenCode (https://opencode.ai) is a standalone binary distributed as an npm
+# package.
+FROM base AS opencode
+RUN npm install -g opencode-ai@1.18.16 \
+  && npm cache clean --force \
+  && rm -rf /root/.cache
+
+# ─── Engine: Cursor ──────────────────────────────────────────────────────────
+# Cursor (https://cursor.com/cli) ships no npm package. Its installer only
+# downloads a versioned bundle, so the pinned bundle is fetched directly into
+# /usr/local/lib (traversable by the unprivileged `sandbox` user) and linked
+# from /usr/local/bin. The whole bundle is required because the launcher loads
+# sibling JavaScript chunks at runtime. Bump CURSOR_VERSION from the release
+# embedded in https://cursor.com/install.
+FROM base AS cursor
+ARG CURSOR_VERSION=2026.09.18-9a7762b
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) cursor_arch=x64 ;; \
+      arm64) cursor_arch=arm64 ;; \
+      *) echo "Unsupported architecture for Cursor CLI" >&2; exit 1 ;; \
+    esac \
+  && install -d /usr/local/lib/cursor-agent \
+  && curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_VERSION}/linux/${cursor_arch}/agent-cli-package.tar.gz" \
+    | tar --strip-components=1 -xzf - -C /usr/local/lib/cursor-agent \
+  && ln -s ../lib/cursor-agent/cursor-agent /usr/local/bin/cursor-agent \
+  && /usr/local/bin/cursor-agent --version
+
+# ─── Default target: Copilot-only workspace ──────────────────────────────────
+FROM base AS workspace

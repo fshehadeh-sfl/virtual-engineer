@@ -357,3 +357,68 @@ should_reuse_container() {
     && [[ "$running_image" == "$latest_image" ]] \
     && [[ "$stored_config_hash" == "$current_config_hash" ]]
 }
+# ─── Agent engines ───────────────────────────────────────────────────────────
+# Copilot ships in the base agent image; every other engine is an opt-in
+# image built from its own Dockerfile.agent target. Keep in sync with
+# AGENT_ENGINES in src/agents/agentEngines.ts.
+AGENT_ENGINE_CATALOG=(copilot claude aider goose codex gemini opencode cursor)
+
+agent_engine_image() {
+  local base="$1" engine="$2"
+  if [[ "$engine" == "copilot" ]]; then
+    printf '%s\n' "$base"
+    return
+  fi
+  local name="${base%:*}" tag="${base##*:}"
+  [[ "$base" == *:* && "$tag" != */* ]] || { name="$base"; tag="latest"; }
+  printf '%s-%s:%s\n' "$name" "$engine" "$tag"
+}
+
+# Prints the engines to install, one per line, in catalog order.
+#   $1 data dir holding agent-engines.requested (written by the admin UI)
+#   $2 extra engines (AGENT_ENGINES: comma/space separated, or "all")
+# Without a saved selection, an existing database means an upgraded instance
+# that previously had every engine, so all are kept; a fresh install gets
+# Copilot only.
+resolve_agent_engines() {
+  local data_dir="$1" extra="${2:-}" requested_file="$1/agent-engines.requested"
+  local -A wanted=([copilot]=1)
+  local engine line known
+  if [[ -f "$requested_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      line="${line//[[:space:]]/}"
+      [[ -n "$line" ]] || continue
+      for known in "${AGENT_ENGINE_CATALOG[@]}"; do
+        [[ "$line" == "$known" ]] && wanted[$line]=1
+      done
+    done < "$requested_file"
+  elif [[ -f "$data_dir/virtual-engineer.db" ]]; then
+    for engine in "${AGENT_ENGINE_CATALOG[@]}"; do wanted[$engine]=1; done
+  fi
+  for engine in ${extra//,/ }; do
+    if [[ "$engine" == "all" ]]; then
+      for known in "${AGENT_ENGINE_CATALOG[@]}"; do wanted[$known]=1; done
+      continue
+    fi
+    if [[ " ${AGENT_ENGINE_CATALOG[*]} " != *" $engine "* ]]; then
+      echo "Unknown agent engine in AGENT_ENGINES: $engine (expected: ${AGENT_ENGINE_CATALOG[*]} or all)" >&2
+      return 1
+    fi
+    wanted[$engine]=1
+  done
+  for engine in "${AGENT_ENGINE_CATALOG[@]}"; do
+    [[ -n "${wanted[$engine]:-}" ]] && printf '%s\n' "$engine"
+  done
+  return 0
+}
+
+write_installed_agent_engines() {
+  local data_dir="$1"; shift
+  local target="$data_dir/agent-engines.installed"
+  {
+    echo "# Written by scripts/start.sh: agent engine images present after the last run."
+    printf '%s\n' "$@"
+  } > "$target.tmp"
+  mv "$target.tmp" "$target"
+}

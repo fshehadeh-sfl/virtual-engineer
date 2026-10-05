@@ -148,3 +148,6 @@ implementation rather than inferred from this assistant workflow rule.
 ```text
 docker build -f Dockerfile.agent -t virtual-engineer-workspace:latest .
 ```
+
+  That target is Copilot-only; other engines are separate targets, e.g.
+  `docker build -f Dockerfile.agent --target aider -t virtual-engineer-workspace-aider:latest .`.
