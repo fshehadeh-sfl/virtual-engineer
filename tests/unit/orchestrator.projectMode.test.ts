@@ -1550,7 +1550,7 @@ describe("Orchestrator — Phase 4 project mode", () => {
     expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_DONE");
   });
 
-  it("fails a REVIEW_WATCHING task when project reconfiguration replaces its review integration", async () => {
+  it("keeps REVIEW_WATCHING polling active when project reconfiguration replaces its review integration", async () => {
     const task = makeTask({
       state: "REVIEW_WATCHING",
       taskType: "code-review",
@@ -1582,14 +1582,19 @@ describe("Orchestrator — Phase 4 project mode", () => {
 
     await orch.checkReviewWatchingTask(task.taskId);
 
-    expect(stateStore.setFailureReason).toHaveBeenCalledWith(
-      task.taskId,
-      expect.stringContaining("Review integration changed while task"),
+    expect(projectMode.pluginManager.createConnectorForCapability).toHaveBeenCalledWith(
+      "github-new",
+      "code_review",
+      { repoKey: "octocat/hello-world" },
     );
-    expect(stateStore.transition).toHaveBeenCalledWith(task.taskId, "REVIEW_FAILED", {
-      error: expect.stringContaining("Manual retry is required"),
-    }, "REVIEW_WATCHING");
-    expect(createConnectorForCapability).not.toHaveBeenCalled();
+    expect(createConnectorForCapability).toHaveBeenCalledOnce();
+    expect(stateStore.setFailureReason).not.toHaveBeenCalled();
+    expect(stateStore.transition).not.toHaveBeenCalledWith(
+      task.taskId,
+      "REVIEW_FAILED",
+      expect.anything(),
+      "REVIEW_WATCHING",
+    );
   });
 
   it("abandons a REVIEW_WATCHING task when the bound change is closed without merging", async () => {
