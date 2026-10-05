@@ -32,11 +32,20 @@ describe("Add integration provider picker", () => {
     const aider = screen.getByRole("button", { name: /Aider/u }) as HTMLButtonElement;
     const copilot = screen.getByRole("button", { name: /GitHub Copilot/u }) as HTMLButtonElement;
     expect(aider.disabled).toBe(true);
-    expect(aider.title).toContain("not installed");
+    expect(aider.title).toBe("");
+    expect(screen.getByText(/Greyed-out agent engines are not installed/u).textContent).toContain("Configuration → System → Agent engines");
     expect(aider.textContent).toContain("Not installed");
     expect(copilot.disabled).toBe(false);
     expect(copilot.compareDocumentPosition(aider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(aider);
     expect(onDirtyChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the default description when every engine is installed", () => {
+    render(
+      <IntegrationFormModal plugins={[plugin("copilot", "GitHub Copilot")]} onClose={vi.fn()} onSaved={vi.fn()} onDirtyChange={vi.fn()} />,
+    );
+    expect(screen.getByText("Choose the provider type to configure.")).toBeTruthy();
+    expect(screen.queryByText(/Greyed-out/u)).toBeNull();
   });
 });

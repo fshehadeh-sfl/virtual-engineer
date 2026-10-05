@@ -103,7 +103,6 @@ function TypePicker({ plugins, onSelect }: { plugins: ApiPlugin[]; onSelect: (pr
               <button
                 key={plugin.provider}
                 disabled={unavailable}
-                title={plugin.unavailableReason}
                 onClick={() => onSelect(plugin.provider)}
                 onMouseEnter={() => setHovered(plugin.provider)}
                 onMouseLeave={() => setHovered(null)}
@@ -734,7 +733,9 @@ export function IntegrationFormModal({ integration, plugins, onClose, onSaved, o
     return (
       <Modal
         title="Add Integration"
-        sub="Choose the provider type to configure."
+        sub={plugins.some((plugin) => plugin.unavailableReason !== undefined)
+          ? "Choose the provider type to configure. Greyed-out agent engines are not installed: request them under Configuration → System → Agent engines, then rerun ./scripts/start.sh."
+          : "Choose the provider type to configure."}
         wide
         onClose={onClose}
         footer={
