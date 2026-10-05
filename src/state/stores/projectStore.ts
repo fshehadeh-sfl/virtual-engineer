@@ -522,18 +522,18 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
           .prepare(
             "UPDATE tasks SET ticket_source_integration_id = COALESCE(ticket_source_integration_id, ?), " +
             "ticket_source_project_key = COALESCE(ticket_source_project_key, ?), updated_at = ? " +
-            "WHERE project_id = ?"
+            "WHERE project_id = ? AND deleted_at IS NULL"
           )
           .run(ticketBinding.integration_id, ticketProjectKey, now, id);
       }
       raw
         .prepare(
           `UPDATE tasks SET state = 'ABANDONED', failure_reason = ?, updated_at = ? ` +
-          `WHERE project_id = ? AND state NOT IN (${placeholders})`
+          `WHERE project_id = ? AND deleted_at IS NULL AND state NOT IN (${placeholders})`
         )
         .run(reason, now, id, ...TERMINAL_STATES);
       raw
-        .prepare("UPDATE tasks SET project_id = NULL, updated_at = ? WHERE project_id = ?")
+        .prepare("UPDATE tasks SET project_id = NULL, updated_at = ? WHERE project_id = ? AND deleted_at IS NULL")
         .run(now, id);
       raw.prepare("DELETE FROM project_integration_bindings WHERE project_id = ?").run(id);
       raw.prepare("DELETE FROM project_push_targets WHERE project_id = ?").run(id);
@@ -556,6 +556,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
       .prepare(
         "UPDATE tasks SET project_id = ?, updated_at = ? " +
         "WHERE project_id IS NULL " +
+        "AND deleted_at IS NULL " +
         "AND ticket_source_integration_id = ? " +
         "AND ticket_source_project_key = ?"
       )

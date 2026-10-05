@@ -35,6 +35,7 @@
 - `tasks.deleted_at` (nullable epoch-seconds timestamp) marks tasks hidden from operational reads (`getTask`, `getAllTasks`, active/retry lookup paths) without dropping immutable historical rows.
 - `deleteTask(taskId)` now soft-deletes terminal tasks by setting `deleted_at` (and still removing mutable change/comment rows), so `agent_cycles` and `state_transitions` remain available for cost/model/statistics aggregates and audit history.
 - `deleteTaskGroup(taskId)` delegates to the same soft-delete semantics for terminal siblings sharing ticket/change identity; it does not physically delete immutable history rows.
+- Project reassignment/deletion paths (`adoptOrphanedTasksForProject`, `deleteProject`) only mutate rows with `deleted_at IS NULL`, so soft-deleted tasks keep their snapshot bindings and are never resurrected by orphan adoption.
 - `getCostSummary()` and `getModelUsageSummary()` continue aggregating from preserved `agent_cycles` snapshots joined to `tasks`, so deleting a task no longer erases historical USD/token totals.
 - `getProjectStatistics()` excludes `deleted_at` rows from operational task, period, execution, and timing counts to avoid resurfacing soft-deleted tasks in project health metrics.
 
