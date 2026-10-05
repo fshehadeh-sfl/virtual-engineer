@@ -19,6 +19,7 @@ function engine(id: string, overrides: Partial<ApiAgentEngine> = {}): ApiAgentEn
     isDefault: id === "copilot",
     requested: id === "copilot",
     installed: id === "copilot",
+    forced: false,
     integrationCount: 0,
     ...overrides,
   };
@@ -62,6 +63,24 @@ describe("AgentEnginesPanel", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("./scripts/start.sh"));
     expect(putMock).toHaveBeenCalledWith("/api/admin/agent-engines", { requested: ["copilot", "goose"] });
     expect(screen.getByText("Pending rebuild")).toBeTruthy();
+  });
+
+  it("reports unsaved selection changes to the discard guard", async () => {
+    getMock.mockResolvedValue(state([engine("copilot"), engine("goose")]));
+    const onDirtyChange = vi.fn();
+    render(<AgentEnginesPanel canWrite onDirtyChange={onDirtyChange} />);
+    await waitFor(() => expect(screen.getByLabelText("Goose")).toBeTruthy());
+    fireEvent.click(screen.getByLabelText("Goose"));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByLabelText("Goose"));
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("labels engines kept by the launcher instead of pending removal", async () => {
+    getMock.mockResolvedValue(state([engine("copilot"), engine("goose", { installed: true, forced: true })]));
+    render(<AgentEnginesPanel canWrite />);
+    await waitFor(() => expect(screen.getByText("Kept by launcher")).toBeTruthy());
+    expect(screen.queryByText("Removal pending")).toBeNull();
   });
 
   it("is read-only without system.write", async () => {

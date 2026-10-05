@@ -52,8 +52,7 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 
 | Var | Default | Notes |
 |---|---|---|
-| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image the OpenShell sandbox is created from (`sandbox create --from`). It ships only Copilot; every other engine uses `<name>-<engine>:<tag>` derived from it (`agentEngineImage()` in `src/agents/agentEngines.ts`). |
-| `AGENT_ENGINES` | _(empty)_ | `scripts/start.sh` only. Extra engine images to build on top of the admin selection: comma-separated engine ids or `all`. Unknown ids abort the launcher. |
+| `AGENT_CONTAINER_IMAGE` | `virtual-engineer-workspace:latest` | Base image the OpenShell sandbox is created from (`sandbox create --from`). It ships only Copilot; every other engine uses `<name>-<engine>:<tag>` derived from it (`agentEngineImage()` in `src/agents/agentEngines.ts`). `scripts/start.sh` builds images under the same names; a digest-pinned value is treated as externally managed (no local builds or pruning). |
 | `WORKSPACE_BASE_DIR` | `/tmp/virtual-engineer/workspaces` | Host scratch directory for the per-task git workspace. The workspace is uploaded into the sandbox at `/sandbox` and (for coding runs) downloaded back; there are no Docker named volumes or bind mounts. |
 
 There is **no** `AGENT_DOCKER_NETWORK` variable — sandbox egress is opened per run through OpenShell (`allowEgress`), not by attaching a Docker bridge network. `ConfigSchema` / `fromEnv()` cover exactly the 21 keys in the four tables above; nothing else in `src/config.ts` is env-backed.
@@ -76,6 +75,7 @@ These launcher settings are not part of `AppConfig`:
 
 | Var | Default | Notes |
 |---|---|---|
+| `AGENT_ENGINES` | _(empty)_ | Extra engine images to build on top of the admin selection: comma-separated engine ids or `all`. Unknown ids abort the launcher. |
 | `REVIEW_DIFF_TMPFS_SIZE` | `2g` | Size limit for the orchestrator's `/tmp/ve-review-diffs` tmpfs, shared by concurrent Gerrit diff fetches. Accepts a positive integer followed by `m` (MiB) or `g` (GiB); empty uses the default, zero and malformed values fail before startup side effects. |
 
 This remains RAM-backed storage (potentially swapped), not a disk quota. Size it

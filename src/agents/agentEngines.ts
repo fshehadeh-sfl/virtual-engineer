@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -38,6 +39,10 @@ export const AGENT_ENGINE_LABELS: Readonly<Record<AgentEngine, string>> = {
 export const REQUESTED_ENGINES_FILE = "agent-engines.requested";
 /** Written by `scripts/start.sh` after building; read by the orchestrator. */
 export const INSTALLED_ENGINES_FILE = "agent-engines.installed";
+/** Written by `scripts/start.sh`: installed engines kept although not requested (`AGENT_ENGINES` or in use). */
+export const FORCED_ENGINES_FILE = "agent-engines.forced";
+/** Written by the orchestrator: engines used by an agent integration; `scripts/start.sh` never prunes them. */
+export const IN_USE_ENGINES_FILE = "agent-engines.in-use";
 
 export function isAgentEngine(value: unknown): value is AgentEngine {
   return typeof value === "string" && (AGENT_ENGINES as readonly string[]).includes(value);
@@ -86,12 +91,15 @@ export interface AgentEngineStatus {
   requested: boolean;
   /** `null` when the launcher has not reported install state (e.g. `npm run dev`). */
   installed: boolean | null;
+  /** Installed but not requested because the launcher kept it (`AGENT_ENGINES` or still in use). */
+  forced: boolean;
   integrationCount: number;
 }
 
 export function describeAgentEngines(input: {
   requested: readonly AgentEngine[];
   installed: readonly AgentEngine[] | undefined;
+  forced?: readonly AgentEngine[] | undefined;
   integrationCounts: ReadonlyMap<AgentEngine, number>;
 }): AgentEngineStatus[] {
   return AGENT_ENGINES.map((id) => ({
@@ -100,6 +108,8 @@ export function describeAgentEngines(input: {
     isDefault: id === DEFAULT_AGENT_ENGINE,
     requested: id === DEFAULT_AGENT_ENGINE || input.requested.includes(id),
     installed: input.installed === undefined ? null : input.installed.includes(id),
+    forced: id !== DEFAULT_AGENT_ENGINE && !input.requested.includes(id)
+      && (input.installed?.includes(id) ?? false) && (input.forced?.includes(id) ?? false),
     integrationCount: input.integrationCounts.get(id) ?? 0,
   }));
 }
@@ -135,19 +145,46 @@ export class AgentEngineStateStore {
     return text === undefined ? undefined : parseEngineList(text);
   }
 
+  /** Engines the launcher kept without a request; empty when never reported. */
+  async readForced(): Promise<AgentEngine[]> {
+    const text = await this.readOptional(FORCED_ENGINES_FILE);
+    return text === undefined ? [] : parseEngineList(text);
+  }
+
   async writeRequested(engines: Iterable<AgentEngine>): Promise<AgentEngine[]> {
     const normalized = normalizeRequestedEngines(engines);
-    await mkdir(this.dataDir, { recursive: true });
-    const target = join(this.dataDir, REQUESTED_ENGINES_FILE);
-    const temporary = `${target}.${process.pid}.tmp`;
-    const body = [
-      "# Agent engines requested in the admin UI; scripts/start.sh builds these images.",
-      ...normalized,
-      "",
-    ].join("\n");
-    await writeFile(temporary, body, { mode: 0o644 });
-    await rename(temporary, target);
+    await this.writeList(REQUESTED_ENGINES_FILE, "Agent engines requested in the admin UI; scripts/start.sh builds these images.", normalized);
     return normalized;
+  }
+
+  /**
+   * Record which engines agent integrations use so the launcher never prunes
+   * them, and add a newly used engine to the selection so it stays requested.
+   */
+  async recordIntegrationUsage(
+    integrations: ReadonlyArray<{ provider: string }>,
+    addedEngine?: string,
+  ): Promise<void> {
+    const used = sortEngines(new Set(integrations.map((integration) => integration.provider).filter(isAgentEngine)));
+    await this.writeList(IN_USE_ENGINES_FILE, "Agent engines used by integrations; scripts/start.sh never prunes these images.", used);
+    if (!isAgentEngine(addedEngine)) return;
+    const requested = await this.readRequested();
+    if (requested !== undefined && !requested.includes(addedEngine)) {
+      await this.writeRequested([...requested, addedEngine]);
+    }
+  }
+
+  private async writeList(name: string, header: string, engines: readonly AgentEngine[]): Promise<void> {
+    await mkdir(this.dataDir, { recursive: true });
+    const target = join(this.dataDir, name);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, [`# ${header}`, ...engines, ""].join("\n"), { mode: 0o644, flag: "wx" });
+      await rename(temporary, target);
+    } catch (err: unknown) {
+      await rm(temporary, { force: true });
+      throw err;
+    }
   }
 
   /**
@@ -180,17 +217,19 @@ export interface AgentEngineStartupState {
 }
 
 /**
- * Boot-time reconciliation: seed the requested list from existing agent
- * integrations (so an upgrade never drops an engine in use) and report enabled
- * integrations whose engine image is absent.
+ * Boot-time reconciliation: seed the requested list from the engines the
+ * launcher installed plus those existing agent integrations use (so an upgrade
+ * keeps every engine it just built), record engine usage for the launcher's
+ * prune guard, and report enabled integrations whose engine image is absent.
  */
 export async function initializeAgentEngineState(
   store: AgentEngineStateStore,
   integrations: ReadonlyArray<{ provider: string; name: string; enabled: boolean }>,
 ): Promise<AgentEngineStartupState> {
   const used = integrations.map((integration) => integration.provider).filter(isAgentEngine);
-  const requested = await store.seedRequested(used);
   const installed = await store.readInstalled();
+  const requested = await store.seedRequested([...used, ...(installed ?? [])]);
+  await store.recordIntegrationUsage(integrations);
   const missing = integrations.flatMap((integration) =>
     integration.enabled && agentEngineUnavailableMessage(integration.provider, installed) !== undefined && isAgentEngine(integration.provider)
       ? [{ integrationName: integration.name, engine: integration.provider }]

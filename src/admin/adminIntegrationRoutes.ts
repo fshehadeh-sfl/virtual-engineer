@@ -26,7 +26,7 @@ import { agentEngineUnavailableMessage, type AgentEngine, type AgentEngineStateS
 
 const log = getLogger("admin-integrations");
 
-function filterVisibleIntegrations(req: IncomingMessage, integrations: Integration[]): Integration[] {
+export function filterVisibleIntegrations<T extends Pick<Integration, "id" | "ownerUserId">>(req: IncomingMessage, integrations: T[]): T[] {
   const perms = getEffectivePermissions(req);
   if (!perms) return integrations;
   const actorUserId = getAuthContext(req)?.userId ?? null;
@@ -71,23 +71,33 @@ export interface IntegrationRouteDeps {
   onIntegrationUpdated?: ((integrationId: string) => void) | undefined;
   adminAuthSecret?: string | undefined;
   /** Install state used to refuse agent integrations whose engine image is missing. */
-  agentEngines?: Pick<AgentEngineStateStore, "readInstalled"> | undefined;
+  agentEngines?: (Pick<AgentEngineStateStore, "readInstalled"> & Partial<Pick<AgentEngineStateStore, "recordIntegrationUsage">>) | undefined;
 }
 
 /** Register integration, plugin and OAuth-app routes on the given router. */
 export function registerIntegrationRoutes(router: Router, deps: IntegrationRouteDeps): void {
-  /** Writes 409 and returns false when the provider's agent engine is not installed. */
   const unavailableReason = (provider: string, installed: readonly AgentEngine[] | undefined): { unavailableReason?: string } => {
     const message = agentEngineUnavailableMessage(provider, installed);
     return message === undefined ? {} : { unavailableReason: message };
   };
 
+  /** Writes 409 and returns false when the provider's agent engine is not installed. */
   const ensureAgentEngineInstalled = async (res: ServerResponse, provider: string): Promise<boolean> => {
     if (!deps.agentEngines) return true;
     const message = agentEngineUnavailableMessage(provider, await deps.agentEngines.readInstalled());
     if (message === undefined) return true;
     writeJson(res, 409, { error: message });
     return false;
+  };
+
+  /** Best-effort: keep the launcher's prune guard and engine selection in sync with integrations. */
+  const recordAgentEngineUsage = async (addedProvider?: string): Promise<void> => {
+    if (!deps.agentEngines?.recordIntegrationUsage || !deps.integrationStore) return;
+    try {
+      await deps.agentEngines.recordIntegrationUsage(await deps.integrationStore.getIntegrations(), addedProvider);
+    } catch (err: unknown) {
+      log.warn({ err }, "could not record agent engine usage");
+    }
   };
 
   const discoverModels = async (
@@ -336,6 +346,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
           log.warn({ id, provider, err: activationErr }, "integration created but could not be activated at runtime (incomplete config?)");
         }
       }
+      await recordAgentEngineUsage(provider);
       recordAudit(deps.auditStore, req, { action: "integration.create", targetType: "integration", targetId: id, details: { name: integration.name, provider } });
       writeJson(res, 201, { integration: serializeIntegration(integration, deps.pluginManager, deps.integrationStreams) });
     } catch (err: unknown) {
@@ -484,6 +495,7 @@ export function registerIntegrationRoutes(router: Router, deps: IntegrationRoute
     try {
       if (existing.enabled && deps.pluginManager) await deps.pluginManager.disablePlugin(id);
       await deps.integrationStore.deleteIntegration(id);
+      await recordAgentEngineUsage();
       recordAudit(deps.auditStore, req, { action: "integration.delete", targetType: "integration", targetId: id, details: { name: existing.name, provider: existing.provider } });
       writeJson(res, 200, { deleted: true });
     } catch (err: unknown) {

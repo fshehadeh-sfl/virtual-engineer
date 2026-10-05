@@ -576,6 +576,8 @@ export interface ApiAgentEngine {
   requested: boolean;
   /** `null` when the launcher has not reported install state. */
   installed: boolean | null;
+  /** Installed but kept by the launcher (`AGENT_ENGINES` or in use) without a request. */
+  forced: boolean;
   integrationCount: number;
 }
 

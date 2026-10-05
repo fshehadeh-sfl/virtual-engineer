@@ -84,6 +84,10 @@ describe("Admin API — agent engine routes", () => {
       integrationStore: {
         getIntegrations: vi.fn(async () => integrations),
         getIntegration: vi.fn(async (id: string) => integrations.find((item) => item.id === id) ?? null),
+        upsertIntegration: vi.fn(async (input: Integration) => {
+          integrations = [...integrations, input];
+          return input;
+        }),
       } as unknown as NonNullable<AdminServerDependencies["integrationStore"]>,
       pluginManager: { enablePlugin, isIntegrationActive: () => false } as unknown as PluginManager,
       agentEngines: new AgentEngineStateStore(dir),
@@ -122,6 +126,16 @@ describe("Admin API — agent engine routes", () => {
     expect(await readFile(join(dir, "agent-engines.requested"), "utf8")).toContain("\naider\n");
   });
 
+  it("does not report engines kept by AGENT_ENGINES as pending removal", async () => {
+    await writeFile(join(dir, "agent-engines.requested"), "copilot\n");
+    await writeFile(join(dir, "agent-engines.installed"), "copilot\ngoose\n");
+    await writeFile(join(dir, "agent-engines.forced"), "goose\n");
+    const r = await rest(server, "/api/admin/agent-engines");
+    expect(r.body?.["rebuildRequired"]).toBe(false);
+    const engines = r.body?.["engines"] as Array<Record<string, unknown>>;
+    expect(engines.find((engine) => engine["id"] === "goose")).toMatchObject({ requested: false, installed: true, forced: true });
+  });
+
   it("PUT rejects unknown engines", async () => {
     const r = await rest(server, "/api/admin/agent-engines", { method: "PUT", body: { requested: ["bogus"] } });
     expect(r.status).toBe(400);
@@ -140,6 +154,15 @@ describe("Admin API — agent engine routes", () => {
     const r = await rest(server, "/api/admin/integrations", { method: "POST", body: { provider: "aider", name: "Aider", config: {} } });
     expect(r.status).toBe(409);
     expect(String(r.body?.["error"])).toMatch(/Aider.*not installed/u);
+  });
+
+  it("keeps a newly used engine requested and protected from pruning", async () => {
+    await writeFile(join(dir, "agent-engines.installed"), "copilot\ngoose\n");
+    await writeFile(join(dir, "agent-engines.requested"), "copilot\n");
+    const r = await rest(server, "/api/admin/integrations", { method: "POST", body: { provider: "goose", name: "Goose", config: {} } });
+    expect(r.status).toBe(201);
+    expect(await readFile(join(dir, "agent-engines.requested"), "utf8")).toMatch(/\ngoose\n$/u);
+    expect(await readFile(join(dir, "agent-engines.in-use"), "utf8")).toMatch(/\ngoose\n$/u);
   });
 
   it("refuses to enable an agent integration whose engine is not installed", async () => {

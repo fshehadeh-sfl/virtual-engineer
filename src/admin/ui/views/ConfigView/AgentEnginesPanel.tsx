@@ -4,12 +4,14 @@ import type { ApiAgentEngine, ApiAgentEngines } from "../../types.ts";
 
 interface AgentEnginesPanelProps {
   canWrite: boolean;
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
 }
 
 function engineStatus(engine: ApiAgentEngine): { label: string; color: string } {
   if (engine.installed === null) return { label: "Unknown", color: "var(--text-faint)" };
   if (engine.requested && engine.installed) return { label: "Installed", color: "var(--accent-strong)" };
   if (engine.requested) return { label: "Pending rebuild", color: "var(--warn)" };
+  if (engine.forced) return { label: "Kept by launcher", color: "var(--text-faint)" };
   if (engine.installed) return { label: "Removal pending", color: "var(--warn)" };
   return { label: "Not installed", color: "var(--text-faint)" };
 }
@@ -18,7 +20,7 @@ function engineStatus(engine: ApiAgentEngine): { label: string; color: string } 
  * Selects which agent engine images `scripts/start.sh` builds. Saving only
  * records the selection; images are built or pruned on the next launcher run.
  */
-export function AgentEnginesPanel({ canWrite }: AgentEnginesPanelProps) {
+export function AgentEnginesPanel({ canWrite, onDirtyChange }: AgentEnginesPanelProps) {
   const [state, setState] = useState<ApiAgentEngines | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -37,11 +39,17 @@ export function AgentEnginesPanel({ canWrite }: AgentEnginesPanelProps) {
     return () => { cancelled = true; };
   }, []);
 
+  const dirty = state !== null && state.engines.some((engine) => engine.requested !== selected.has(engine.id));
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
   if (!state) {
     return error ? <div style={{ color: "var(--danger)", fontSize: "12.5px" }}>{error}</div> : null;
   }
-
-  const dirty = state.engines.some((engine) => engine.requested !== selected.has(engine.id));
 
   function toggle(id: string): void {
     setSelected((current) => {

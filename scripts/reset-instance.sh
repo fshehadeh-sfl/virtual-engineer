@@ -127,10 +127,13 @@ remove_path "$DATABASE_PATH"
 remove_path "${DATABASE_PATH}-wal"
 remove_path "${DATABASE_PATH}-shm"
 DATA_STATE_DIR="$(dirname "$DATABASE_PATH")"
-remove_path "${DATA_STATE_DIR}/agent-engines.requested"
-remove_path "${DATA_STATE_DIR}/agent-engines.installed"
+for state_file in agent-engines.requested agent-engines.installed agent-engines.forced agent-engines.in-use; do
+  remove_path "${DATA_STATE_DIR}/${state_file}"
+done
 for marker in "${DATA_STATE_DIR}"/.agent-image-hash*; do
-  [[ -e "$marker" ]] && remove_path "$marker"
+  if [[ -e "$marker" ]]; then
+    remove_path "$marker"
+  fi
 done
 remove_path "./coverage"
 remove_path "./test-results"

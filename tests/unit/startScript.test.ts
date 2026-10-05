@@ -195,6 +195,20 @@ describe("start.sh agent engine selection", () => {
     expect(resolve(dir, "all")).toBe("copilot claude aider goose codex gemini opencode cursor");
   });
 
+  it("never drops an engine an agent integration still uses", () => {
+    const dir = dataDir({ "agent-engines.requested": "copilot\n", "agent-engines.in-use": "# in use\ngoose\n" });
+    expect(resolve(dir)).toBe("copilot goose");
+  });
+
+  it("records installed engines kept without a request as forced", () => {
+    const dir = dataDir({ "agent-engines.requested": "copilot\ncodex\n" });
+    runHelper('write_forced_agent_engines "$1" copilot goose codex', [dir]);
+    expect(readFileSync(join(dir, "agent-engines.forced"), "utf8")).toMatch(/\ngoose\n$/u);
+    const fresh = dataDir();
+    runHelper('write_forced_agent_engines "$1" copilot goose', [fresh]);
+    expect(readFileSync(join(fresh, "agent-engines.forced"), "utf8")).not.toContain("goose");
+  });
+
   it("rejects unknown AGENT_ENGINES values", () => {
     expect(() => runHelper('resolve_agent_engines "$1" "$2"', [dataDir(), "nope"])).toThrow();
   });
@@ -215,7 +229,10 @@ describe("start.sh agent engine selection", () => {
     const script = readFileSync("scripts/start.sh", "utf8");
     expect(script).toContain('docker build -f Dockerfile.agent --target "$target" -t "$image" .');
     expect(script).toContain('write_installed_agent_engines "$DATA_DIR"');
+    expect(script).toContain('write_forced_agent_engines "$DATA_DIR"');
     expect(script).toContain('docker image rm "$image"');
+    expect(script).toContain('AGENT_BASE_IMAGE="${AGENT_CONTAINER_IMAGE:-virtual-engineer-workspace:latest}"');
+    expect(script).toContain('if [[ "$AGENT_BASE_IMAGE" == *@* ]]; then');
   });
 });
 
@@ -888,9 +905,10 @@ describe("reset-instance.sh", () => {
   it("clears the agent engine selection next to the database", () => {
     const script = readFileSync("scripts/reset-instance.sh", "utf8");
 
-    expect(script).toContain('remove_path "${DATA_STATE_DIR}/agent-engines.requested"');
-    expect(script).toContain('remove_path "${DATA_STATE_DIR}/agent-engines.installed"');
+    expect(script).toContain("for state_file in agent-engines.requested agent-engines.installed agent-engines.forced agent-engines.in-use; do");
+    expect(script).toContain('remove_path "${DATA_STATE_DIR}/${state_file}"');
     expect(script).toContain('"${DATA_STATE_DIR}"/.agent-image-hash*');
+    expect(script).toContain('if [[ -e "$marker" ]]; then');
   });
 
   it("resolves the same kubeconfig start.sh uses before uninstalling the Helm release", () => {

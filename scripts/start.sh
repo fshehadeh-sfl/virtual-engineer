@@ -404,12 +404,23 @@ agent_image_present_in_runtime() {
 # Copilot lives in the base image (Dockerfile.agent target `workspace`); other
 # engines are opt-in images (target `<engine>`) selected in the admin UI
 # (Configuration → System → Agent engines) or via AGENT_ENGINES in .env.
-AGENT_BASE_IMAGE="virtual-engineer-workspace:latest"
-AGENT_ENGINE_LIST=$(resolve_agent_engines "$DATA_DIR" "${AGENT_ENGINES:-}") \
-  || error "Invalid AGENT_ENGINES value."
-mapfile -t AGENT_ENGINES_TO_BUILD <<< "$AGENT_ENGINE_LIST"
-[[ ${#AGENT_ENGINES_TO_BUILD[@]} -gt 0 ]] || error "Could not resolve agent engines."
-info "Agent engines: ${AGENT_ENGINES_TO_BUILD[*]}"
+# Images are named after AGENT_CONTAINER_IMAGE, matching agentEngineImage() in
+# src/agents/agentEngines.ts. A digest-pinned base cannot be built locally, so
+# its images are treated as externally managed and install state is unknown.
+AGENT_BASE_IMAGE="${AGENT_CONTAINER_IMAGE:-virtual-engineer-workspace:latest}"
+AGENT_ENGINES_TO_BUILD=()
+if [[ "$AGENT_BASE_IMAGE" == *@* ]]; then
+  AGENT_IMAGES_MANAGED=0
+  warn "AGENT_CONTAINER_IMAGE is pinned by digest; skipping agent image builds and pruning."
+  rm -f "${DATA_DIR}/agent-engines.installed" "${DATA_DIR}/agent-engines.forced"
+else
+  AGENT_IMAGES_MANAGED=1
+  AGENT_ENGINE_LIST=$(resolve_agent_engines "$DATA_DIR" "${AGENT_ENGINES:-}") \
+    || error "Invalid AGENT_ENGINES value."
+  mapfile -t AGENT_ENGINES_TO_BUILD <<< "$AGENT_ENGINE_LIST"
+  [[ ${#AGENT_ENGINES_TO_BUILD[@]} -gt 0 ]] || error "Could not resolve agent engines."
+  info "Agent engines: ${AGENT_ENGINES_TO_BUILD[*]}"
+fi
 
 AGENT_HASH=$(build_inputs_hash Dockerfile.agent agent-worker)
 for engine in "${AGENT_ENGINES_TO_BUILD[@]}"; do
@@ -444,8 +455,9 @@ for engine in "${AGENT_ENGINES_TO_BUILD[@]}"; do
 done
 
 # Remove engine images that are no longer selected. Only an explicit admin
-# selection prunes; legacy instances without one keep every engine.
-if [[ -f "${DATA_DIR}/agent-engines.requested" ]]; then
+# selection prunes; legacy instances without one keep every engine. Engines in
+# agent-engines.in-use were already added to the build list, so they survive.
+if [[ "$AGENT_IMAGES_MANAGED" -eq 1 && -f "${DATA_DIR}/agent-engines.requested" ]]; then
   for engine in "${AGENT_ENGINE_CATALOG[@]}"; do
     [[ "$engine" == "copilot" ]] && continue
     [[ " ${AGENT_ENGINES_TO_BUILD[*]} " == *" $engine "* ]] && continue
@@ -462,7 +474,10 @@ if [[ -f "${DATA_DIR}/agent-engines.requested" ]]; then
     fi
   done
 fi
-write_installed_agent_engines "$DATA_DIR" "${AGENT_ENGINES_TO_BUILD[@]}"
+if [[ "$AGENT_IMAGES_MANAGED" -eq 1 ]]; then
+  write_forced_agent_engines "$DATA_DIR" "${AGENT_ENGINES_TO_BUILD[@]}"
+  write_installed_agent_engines "$DATA_DIR" "${AGENT_ENGINES_TO_BUILD[@]}"
+fi
 
 # ─── Orchestrator image (always includes the OpenShell CLI) ───────────────────
 # Skip the build when its inputs (Dockerfile + src + agent-worker + prompts +
@@ -685,7 +700,7 @@ else
   write_docker_gateway_config \
     "$OPENSHELL_GATEWAY_CONFIG_FILE" \
     "$OPENSHELL_OIDC_ISSUER" \
-    "virtual-engineer-workspace:latest" \
+    "$AGENT_BASE_IMAGE" \
     "$OPENSHELL_SUPERVISOR_IMAGE" \
     "$OPENSHELL_GW_LOCAL_PORT" \
     "${OPENSHELL_GATEWAY_PKI_DIR}/jwt"

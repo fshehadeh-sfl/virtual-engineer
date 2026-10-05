@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   AgentEngineStateStore,
+  FORCED_ENGINES_FILE,
   INSTALLED_ENGINES_FILE,
+  IN_USE_ENGINES_FILE,
   REQUESTED_ENGINES_FILE,
   agentEngineImage,
   agentEngineUnavailableMessage,
@@ -117,5 +119,33 @@ describe("AgentEngineStateStore", () => {
     expect(state.requested).toEqual(["copilot", "aider", "codex"]);
     expect(state.installed).toEqual(["copilot"]);
     expect(state.missing).toEqual([{ integrationName: "Aider", engine: "aider" }]);
+    expect(await readFile(join(dir, IN_USE_ENGINES_FILE), "utf8")).toMatch(/\ncopilot\naider\ncodex\n$/u);
+  });
+
+  it("keeps every engine an upgrade just built when seeding the selection", async () => {
+    await writeFile(join(dir, INSTALLED_ENGINES_FILE), "copilot\nclaude\ngoose\n");
+    const state = await initializeAgentEngineState(new AgentEngineStateStore(dir), []);
+    expect(state.requested).toEqual(["copilot", "claude", "goose"]);
+  });
+
+  it("adds a newly used engine to an existing selection", async () => {
+    const store = new AgentEngineStateStore(dir);
+    await store.writeRequested([]);
+    await store.recordIntegrationUsage([{ provider: "goose" }, { provider: "gerrit" }], "goose");
+    expect(await store.readRequested()).toEqual(["copilot", "goose"]);
+    expect(await readFile(join(dir, IN_USE_ENGINES_FILE), "utf8")).toMatch(/\ngoose\n$/u);
+  });
+
+  it("survives concurrent selection writes", async () => {
+    const store = new AgentEngineStateStore(dir);
+    await Promise.all(Array.from({ length: 10 }, (_, i) => store.writeRequested(i % 2 === 0 ? ["aider"] : ["goose"])));
+    expect([["copilot", "aider"], ["copilot", "goose"]]).toContainEqual(await store.readRequested());
+  });
+
+  it("reads engines the launcher kept without a request", async () => {
+    const store = new AgentEngineStateStore(dir);
+    expect(await store.readForced()).toEqual([]);
+    await writeFile(join(dir, FORCED_ENGINES_FILE), "# kept\ngoose\n");
+    expect(await store.readForced()).toEqual(["goose"]);
   });
 });

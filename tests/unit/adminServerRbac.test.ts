@@ -8,6 +8,10 @@ import { createAdminServer } from "../../src/admin/adminServer.js";
 import { agentLogBus, clearTaskEventBuffer, pushToTaskBuffer } from "../../src/agents/agentEventBus.js";
 import { registerBuiltinPlugins } from "../../src/plugins/init.js";
 import { tempDatabasePath } from "./helpers/tempDatabase.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentEngineStateStore } from "../../src/agents/agentEngines.js";
 
 const SECRET = "rbac-test-secret";
 
@@ -21,8 +25,9 @@ function tempDbPath(): string {
   return tempDatabasePath("ve-rbac");
 }
 
-function makeServer(store: SqliteStateStore): ReturnType<typeof createAdminServer> {
+function makeServer(store: SqliteStateStore, agentEngineDir?: string): ReturnType<typeof createAdminServer> {
   return createAdminServer({
+    ...(agentEngineDir !== undefined ? { agentEngines: new AgentEngineStateStore(agentEngineDir) } : {}),
     stateStore: store,
     integrationStore: store,
     oAuthAppStore: store,
@@ -1346,6 +1351,54 @@ describe("adminServer PBAC project scoping", () => {
       error: "forbidden",
       permission: "task.read",
     });
+  });
+
+  it("does not reveal private integrations through agent engine usage", async () => {
+    const engineDir = mkdtempSync(join(tmpdir(), "ve-rbac-engines-"));
+    await closeServer(server);
+    server = makeServer(store, engineDir);
+    baseUrl = await listen(server);
+    try {
+      const admin = await setupAdmin();
+      const owner = await createUserAndLogin(admin, "engine-owner", "operator");
+      const peer = await createUserAndLogin(admin, "engine-peer", "operator");
+      await store.upsertIntegration({
+        id: "engine-private-goose",
+        provider: "goose",
+        name: "Private goose integration",
+        configJson: "{}",
+        enabled: true,
+        ownerUserId: owner.user.id,
+      });
+      await new AgentEngineStateStore(engineDir).writeRequested(["goose"]);
+      const group = await store.createGroup({ name: "Engine managers" });
+      await store.addUserToGroup(group.id, peer.user.id);
+      const policy = await store.createPolicy({ name: "System write" });
+      await store.setPolicyRules(policy.id, [{ permission: "system.write" }]);
+      await store.createBinding({ policyId: policy.id, principalType: "group", principalId: group.id });
+
+      const gooseCount = async (token: string): Promise<number | undefined> => {
+        const response = await fetch(`${baseUrl}/api/admin/agent-engines`, authed(token));
+        expect(response.status).toBe(200);
+        const body = await response.json() as { engines: Array<{ id: string; integrationCount: number }> };
+        return body.engines.find((engine) => engine.id === "goose")?.integrationCount;
+      };
+      expect(await gooseCount(owner.token)).toBe(1);
+      expect(await gooseCount(peer.token)).toBe(0);
+
+      const removal = await fetch(`${baseUrl}/api/admin/agent-engines`, {
+        ...authed(peer.token),
+        method: "PUT",
+        headers: { ...authed(peer.token).headers, "content-type": "application/json" },
+        body: JSON.stringify({ requested: [] }),
+      });
+      expect(removal.status).toBe(409);
+      const error = (await removal.json() as { error: string }).error;
+      expect(error).toContain("1 integration you cannot view");
+      expect(error).not.toContain("Private goose integration");
+    } finally {
+      rmSync(engineDir, { recursive: true, force: true });
+    }
   });
 
   it("does not reveal private agents through legacy prompt usage", async () => {
