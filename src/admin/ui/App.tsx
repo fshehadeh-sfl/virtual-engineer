@@ -369,7 +369,7 @@ export function App() {
           }}
           taskCount={tasks.length}
           activeCount={activeTasks}
-          providerCount={enabledIntegrations}
+          projectCount={projects.filter((p) => p.enabled).length}
           pollingRunning={status?.polling.running ?? false}
         />
         <div className="app-workspace" style={{ flex: 1, overflow: "hidden", display: "flex" }}>
