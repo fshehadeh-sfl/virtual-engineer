@@ -30,6 +30,17 @@
 - `tasks.ticket_source_integration_id` and `tasks.ticket_source_project_key` are nullable text snapshots of the issue-tracking binding that created a ticket task. `createTask()` writes them from its optional `ticketSource` argument, and task hydration exposes them as `ticketSourceIntegrationId` / `ticketSourceProjectKey`; legacy and non-ticket-backed rows may have NULL values. These columns already exist and are not foreign keys.
 - Ticket-source snapshots remain persisted for traceability and legacy tasks. Connector resolution now follows the project's current binding so active non-terminal tasks can continue under updated project configuration; a removed binding still fails closed.
 
+## Log context lookup
+
+`SqliteStateStore.resolveLogContext(kind, id)` synchronously reads existing
+rows by primary key for `integration`, `project`, `agent`, `user`, and `prompt`,
+returning `integrationName`, `projectName`, `agentName`, `userName`, or
+`promptName`. For `task`, it returns `ticketId`, `ticketTitle` (truncated to 80
+characters), and, when linked, `projectId` and `projectName` via a join.
+Unknown IDs or rows without readable fields return `undefined`. Statements
+are prepared once per entity kind, while names are queried on every log write
+to reflect edits. This read-time API adds no schema, index, or migration.
+
 ## Task soft deletion and cost history
 
 - `tasks.deleted_at` (nullable epoch-seconds timestamp) marks tasks hidden from operational reads (`getTask`, `getAllTasks`, active/retry lookup paths) without dropping immutable historical rows.

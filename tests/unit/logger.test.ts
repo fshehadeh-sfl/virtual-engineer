@@ -105,6 +105,43 @@ describe("getLogger", () => {
     });
   });
 
+  it.each([
+    { taskId: "t1", projectId: "p2" },
+    { projectId: "p2", taskId: "t1" },
+  ])("resolves the explicit project's name regardless of field order: %j", async (fields) => {
+    const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
+    const resolver = vi.fn((kind: string, id: string) => {
+      if (kind === "task") return { ticketId: "#42", projectId: "p1", projectName: "Original" };
+      if (kind === "project") return { projectName: id === "p2" ? "Selected" : "Original" };
+      return undefined;
+    });
+    setLogContextResolver(resolver);
+
+    expect(enrichLogFields(fields)).toEqual(expect.objectContaining({
+      taskId: "t1", ticketId: "#42", projectId: "p2", projectName: "Selected",
+    }));
+    expect(resolver).toHaveBeenCalledWith("project", "p2");
+    expect(resolver).not.toHaveBeenCalledWith("project", "p1");
+  });
+
+  it("reuses the joined task project name without querying the project again", async () => {
+    const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
+    const resolver = vi.fn((kind: string) => {
+      if (kind === "task") return { ticketId: "#42", projectId: "p1", projectName: "Original" };
+      if (kind === "project") return { projectName: "Should not be used" };
+      return undefined;
+    });
+    setLogContextResolver(resolver);
+
+    expect(enrichLogFields({ taskId: "t1" })).toEqual({
+      taskId: "t1", ticketId: "#42", projectId: "p1", projectName: "Original",
+    });
+    expect(enrichLogFields({ taskId: "t1", projectId: "p1" })).toEqual({
+      taskId: "t1", ticketId: "#42", projectName: "Original", projectId: "p1",
+    });
+    expect(resolver).not.toHaveBeenCalledWith("project", "p1");
+  });
+
   it("keeps explicit names, skips unknown IDs, and survives resolver failures", async () => {
     const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
     setLogContextResolver((kind) => {

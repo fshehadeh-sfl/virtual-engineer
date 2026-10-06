@@ -56,15 +56,23 @@ export function enrichLogFields(fields: Record<string, unknown>): Record<string,
     if (!(key in result)) result[key] = value;
     const kind = ENRICHED_ID_FIELDS[key];
     if (!kind || typeof value !== "string" || value === "") continue;
+    if (kind === "project" && result["projectName"] !== undefined) continue;
     const context = resolveSafely(resolver, kind, value);
     if (!context) continue;
     for (const [extraKey, extraValue] of Object.entries(context)) {
+      if (
+        kind === "task" &&
+        (extraKey === "projectId" || extraKey === "projectName") &&
+        typeof fields["projectId"] === "string" &&
+        fields["projectId"] !== context["projectId"]
+      ) continue;
       if (extraKey in fields || extraKey in result) continue;
       result[extraKey] = extraValue;
       changed = true;
       // Context may introduce a new ID (e.g. a task's projectId); resolve it too.
       const nestedKind = ENRICHED_ID_FIELDS[extraKey];
       if (!nestedKind || nestedKind === kind) continue;
+      if (nestedKind === "project" && (context["projectName"] || fields["projectName"])) continue;
       for (const [nestedKey, nestedValue] of Object.entries(resolveSafely(resolver, nestedKind, extraValue) ?? {})) {
         if (!(nestedKey in fields) && !(nestedKey in result)) result[nestedKey] = nestedValue;
       }
