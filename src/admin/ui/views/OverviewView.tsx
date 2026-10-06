@@ -59,20 +59,79 @@ function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
   );
 }
 
-function VoteBreakdown({ votes }: { votes: ApiOverview["reviewVotes"] }) {
+const VOTE_PERIODS: { label: string; days: number | null }[] = [
+  { label: "24h", days: 1 },
+  { label: "7d", days: 7 },
+  { label: "30d", days: 30 },
+  { label: "All", days: null },
+];
+
+function VoteBreakdown({ initialVotes }: { initialVotes: ApiOverview["reviewVotes"] }) {
+  const [days, setDays] = useState<number | null>(7);
+  const [fetched, setFetched] = useState<{ days: number | null; votes: ApiOverview["reviewVotes"] } | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (days === 7) {
+      setError(false);
+      return;
+    }
+    let cancelled = false;
+    setError(false);
+    const path = days === null ? "/api/admin/review-votes" : `/api/admin/review-votes?days=${days}`;
+    api
+      .get<ApiOverview["reviewVotes"]>(path)
+      .then((data) => {
+        if (!cancelled) setFetched({ days, votes: data });
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [days]);
+
+  const votes = days === 7 ? initialVotes : fetched?.days === days ? fetched.votes : null;
   const rows = [
-    { k: "+2", v: votes.plus2,  tone: "ok" as const },
-    { k: "+1", v: votes.plus1,  tone: "ok" as const },
-    { k: "−1", v: votes.minus1, tone: "danger" as const },
-    { k: "−2", v: votes.minus2, tone: "danger" as const },
+    { k: "+2", v: votes?.plus2 ?? 0,  tone: "ok" as const },
+    { k: "+1", v: votes?.plus1 ?? 0,  tone: "ok" as const },
+    { k: "−1", v: votes?.minus1 ?? 0, tone: "danger" as const },
+    { k: "−2", v: votes?.minus2 ?? 0, tone: "danger" as const },
   ];
   const max = Math.max(...rows.map((r) => r.v), 1);
   return (
     <div className="card" style={{ padding: "18px 20px", flex: 1, minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" }}>
-        <span className="eyebrow">Review votes · 7d</span>
-        <Icon name="comment" size={14} style={{ color: "var(--text-ghost)" }} />
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", gap: "10px" }}>
+        <span className="eyebrow">Review votes</span>
+        <div style={{ display: "flex", gap: "4px" }}>
+          {VOTE_PERIODS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => setDays(p.days)}
+              aria-pressed={days === p.days}
+              className="mono"
+              style={{
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: 600,
+                padding: "3px 8px",
+                borderRadius: "6px",
+                border: "1px solid var(--border)",
+                background: days === p.days ? "var(--accent)" : "transparent",
+                color: days === p.days ? "var(--accent-fg, #fff)" : "var(--text-faint)",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
       </div>
+      {error ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Failed to load review votes.</div>
+      ) : votes === null ? (
+        <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Loading…</div>
+      ) : (
       <div style={{ display: "flex", flexDirection: "column", gap: "11px" }}>
         {rows.map((r) => (
           <div key={r.k} style={{ display: "flex", alignItems: "center", gap: "11px" }}>
@@ -84,6 +143,7 @@ function VoteBreakdown({ votes }: { votes: ApiOverview["reviewVotes"] }) {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }
@@ -588,7 +648,7 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
         {overview && (
           <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
             <StateDistribution tasks={tasks} />
-            <VoteBreakdown votes={overview.reviewVotes} />
+            <VoteBreakdown initialVotes={overview.reviewVotes} />
             <RuntimeFacts runtime={overview.runtime} />
           </div>
         )}
