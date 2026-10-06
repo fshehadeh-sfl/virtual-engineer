@@ -53,11 +53,11 @@ interface ProjectFormProject {
   postReviewLinkToTicket?: boolean;
   reactToCiFailures?: boolean;
   ticketSource?: {
-    integration: { id: string; name: string; type: string } | null;
+    integration: { id: string; name: string; provider: string } | null;
     ticketProjectKey: string;
   } | null;
   reviewConfig?: {
-    integration: { id: string; name: string; type: string } | null;
+    integration: { id: string; name: string; provider: string } | null;
     repos: string[];
     assignmentMode?: ReviewAssignmentMode;
   } | null;

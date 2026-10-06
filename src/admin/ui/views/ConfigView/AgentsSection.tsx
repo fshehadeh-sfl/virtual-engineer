@@ -86,6 +86,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
       <AgentDrawer
         item={detailItem}
         prompts={prompts}
+        integrations={integrations}
         onClose={() => navigate({ section: "agents", mode: "list" })}
         {...(can("agent.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "agents", mode: "edit", id: detailItem.id }) } : {})}
         {...(can("agent.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}

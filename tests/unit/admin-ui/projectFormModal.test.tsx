@@ -119,7 +119,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "platform",
           },
           pushTargets: [storedTarget],
@@ -186,7 +186,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: "redmine-1", name: "Tickets", type: "redmine" },
+            integration: { id: "redmine-1", name: "Tickets", provider: "redmine" },
             ticketProjectKey: "platform",
           },
           pushTargets: [{
@@ -254,7 +254,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "platform",
           },
           pushTargets: [{
@@ -477,7 +477,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "yocto",
           },
           pushTargets: [{
@@ -572,7 +572,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "yocto",
           },
           pushTargets: [{
@@ -661,7 +661,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "yocto",
           },
           pushTargets: [{
@@ -747,7 +747,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "aura",
           },
           pushTargets: [{
@@ -836,7 +836,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "yocto",
           },
           pushTargets: [{
@@ -961,7 +961,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "platform",
           },
           pushTargets: [{
@@ -1048,7 +1048,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "platform",
           },
           pushTargets: [{
@@ -1122,7 +1122,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "coding",
           agentId: codingAgent.id,
           ticketSource: {
-            integration: { id: integration.id, name: integration.name, type: integration.provider },
+            integration: { id: integration.id, name: integration.name, provider: integration.provider },
             ticketProjectKey: "platform",
           },
           pushTargets: [{
@@ -1179,7 +1179,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           type: "review",
           agentId: reviewAgent.id,
           reviewConfig: {
-            integration: { id: reviewIntegration.id, name: reviewIntegration.name, type: reviewIntegration.provider },
+            integration: { id: reviewIntegration.id, name: reviewIntegration.name, provider: reviewIntegration.provider },
             repos: ["octocat/repo"],
             assignmentMode: "automatic",
           },
