@@ -85,9 +85,12 @@ export function decodeReviewWorkerOutput(stdout: string, context?: WorkerOutputC
     throw new AgentWorkerProtocolError("Agent worker returned empty stdout", stdout, context);
   }
 
+  // The worker writes its envelope as the final stdout line; the OpenShell CLI
+  // may print tracing logs (e.g. OIDC refresh warnings) to stdout before it.
+  const envelopeLine = trimmed.slice(trimmed.lastIndexOf("\n") + 1);
   let decoded: unknown;
   try {
-    decoded = JSON.parse(trimmed);
+    decoded = JSON.parse(envelopeLine);
   } catch (error: unknown) {
     throw new AgentWorkerProtocolError("Agent worker returned invalid JSON", stdout, context,
       error instanceof Error ? error.message : "JSON parse failed");

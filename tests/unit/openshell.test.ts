@@ -159,6 +159,31 @@ describe("OpenShellClient", () => {
     }
   });
 
+  it("keeps OpenShell tracing logs off stdout unless RUST_LOG is configured", () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 1,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      stdin: { end: vi.fn() },
+      kill: vi.fn(),
+    });
+    const spawnCommand = vi.fn().mockReturnValue(child);
+    const runner = createCommandRunner({ spawnCommand, killProcess: vi.fn() });
+    const previous = process.env["RUST_LOG"];
+    try {
+      delete process.env["RUST_LOG"];
+      void runner("openshell", ["status"]);
+      process.env["RUST_LOG"] = "debug";
+      void runner("openshell", ["status"]);
+    } finally {
+      if (previous === undefined) delete process.env["RUST_LOG"];
+      else process.env["RUST_LOG"] = previous;
+    }
+
+    expect(spawnCommand.mock.calls[0]?.[2].env.RUST_LOG).toBe("error");
+    expect(spawnCommand.mock.calls[1]?.[2].env.RUST_LOG).toBe("debug");
+  });
+
   it("terminates a command that exceeds the client deadline", async () => {
     const runner: CommandRunner = async (_bin, _args, _input, _callbacks, control) =>
       new Promise((resolve) => {
@@ -737,6 +762,43 @@ describe("OpenShellClient", () => {
     });
 
     await expect(client.removeProvider("ve-task-1-agent")).resolves.toBeUndefined();
+  });
+
+  it("retries provider deletion while a just-deleted sandbox is still attached", async () => {
+    const attached = {
+      code: 1,
+      stdout: "",
+      stderr: "provider 've-task-1-agent' is attached to sandbox(es): ve-task-1",
+    };
+    const results = [attached, attached, { code: 0, stdout: "", stderr: "" }];
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      return results.shift() ?? { code: 0, stdout: "", stderr: "" };
+    };
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(3);
+  });
+
+  it("gives up on provider deletion when the sandbox stays attached", async () => {
+    const { runner, calls } = runnerReturning({
+      code: 1,
+      stderr: "provider 've-task-1-agent' is attached to sandbox(es): ve-task-1",
+    });
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).rejects.toThrow(/attached to sandbox/);
+    expect(calls).toHaveLength(5);
+  });
+
+  it("does not retry provider deletion for unrelated failures", async () => {
+    const { runner, calls } = runnerReturning({ code: 1, stderr: "permission denied" });
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).rejects.toThrow(/permission denied/);
+    expect(calls).toHaveLength(1);
   });
 
   it("checks gateway health through the authenticated OpenShell CLI profile", async () => {
