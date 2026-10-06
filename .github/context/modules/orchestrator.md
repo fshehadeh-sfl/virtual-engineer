@@ -99,9 +99,11 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 ### `pollReviewProjects()` (project mode + review trigger only)
 
 - iterates enabled **review** projects and reads their review config
-- skips `automatic` projects during assignment discovery so saving a project does not backfill already-open changes; those projects rely on revision webhooks/streams and provider-native assignment
+- for `automatic` projects with revision polling support (GitHub), stores a durable activation time and polls PRs created or updated after it, even when VE is not yet requested; existing open PRs are not backfilled on activation or upgrade
+- for `automatic` projects without revision polling support, continues to rely on revision webhooks/streams and provider-native assignment
 - skips integrations whose descriptor declares `streamEvents` (e.g. Gerrit — those receive review assignments via the persistent SSH stream instead)
-- calls the code_review connector's `getOpenReviewAssignments(repos)` for `manual` projects and fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId)`) for each new discovery
+- calls the code_review connector's `getOpenReviewAssignments(repos)` for `manual` projects, or `getOpenReviewChanges(repos, since)` for supported `automatic` projects, then fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId)`) with the corresponding backfill/revision cause
+- avoids retriggering an unchanged GitHub head SHA on every poll; rechecks it after 10 minutes or immediately when the head changes, and retries a rejected trigger on the next tick
 - wired from `src/index.ts` via `setReviewTrigger()`; a no-op when no trigger is set
 
 ### `pollInReviewTasks()` (always on)

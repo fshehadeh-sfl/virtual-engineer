@@ -574,6 +574,69 @@ describe("GitHubPullRequestReviewConnector", () => {
     });
   });
 
+  describe("getOpenReviewChanges", () => {
+    it("finds only PRs updated after activation, whether or not VE is requested", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...githubPr, number: 10, title: "Updated", updated_at: "2026-10-06T14:01:00Z", requested_reviewers: [] },
+        { ...githubPr, number: 11, title: "Already open", updated_at: "2026-10-06T13:59:00Z", requested_reviewers: [] },
+        { ...githubPr, number: 12, title: "At activation", updated_at: "2026-10-06T14:00:00Z", requested_reviewers: [] },
+      ]));
+
+      const results = await makeConnector().getOpenReviewChanges(
+        ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
+      );
+
+      expect(results.map((pr) => pr.changeId)).toEqual(["octocat/hello-world#10"]);
+      expect(fetchMock.mock.calls[0]?.[0]).toContain("sort=updated");
+      expect(fetchMock.mock.calls[0]?.[0]).toContain("direction=desc");
+      expect(fetchMock.mock.calls.some((call: unknown[]) => typeof call[0] === "string" && call[0].endsWith("/user"))).toBe(false);
+    });
+
+    it("paginates by update time and stops when older PRs are reached", async () => {
+      const recent = Array.from({ length: 100 }, (_, index) => ({
+        ...githubPr,
+        number: index + 1,
+        updated_at: "2026-10-06T14:01:00Z",
+        requested_reviewers: [],
+      }));
+      fetchMock.mockResolvedValueOnce(jsonResponse(recent));
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...githubPr, number: 101, updated_at: "2026-10-06T14:01:00Z", requested_reviewers: [] },
+        { ...githubPr, number: 102, updated_at: "2026-10-06T13:59:00Z", requested_reviewers: [] },
+      ]));
+
+      const results = await makeConnector().getOpenReviewChanges(
+        ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
+      );
+
+      expect(results).toHaveLength(101);
+      expect(results.at(-1)?.changeId).toBe("octocat/hello-world#101");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not drop qualifying PRs after five full pages", async () => {
+      for (let page = 0; page < 5; page++) {
+        fetchMock.mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, (_, index) => ({
+          ...githubPr,
+          number: page * 100 + index + 1,
+          updated_at: "2026-10-06T14:01:00Z",
+          requested_reviewers: [],
+        }))));
+      }
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...githubPr, number: 501, updated_at: "2026-10-06T14:01:00Z", requested_reviewers: [] },
+      ]));
+
+      const results = await makeConnector().getOpenReviewChanges(
+        ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
+      );
+
+      expect(results).toHaveLength(501);
+      expect(results.at(-1)?.changeId).toBe("octocat/hello-world#501");
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+  });
+
   describe("hasReviewAssignment", () => {
     it("returns true when VE is still requested on an open PR", async () => {
       fetchMock.mockResolvedValueOnce(

@@ -96,6 +96,10 @@ const GitHubPrListItemSchema = z.object({
   requested_reviewers: z.array(z.object({ login: z.string() })),
 });
 const GitHubPrListSchema = z.array(GitHubPrListItemSchema);
+const GitHubUpdatedPrListSchema = z.array(GitHubPrListItemSchema.extend({
+  updated_at: z.string().datetime(),
+  head: z.object({ sha: z.string() }),
+}));
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -539,6 +543,45 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
     }
 
     log.debug({ repos: repos.length, found: results.length }, "review assignment poll complete");
+    return results;
+  }
+
+  /** Discover open PRs touched after polling was enabled, including unassigned PRs. */
+  async getOpenReviewChanges(repos: string[], since: Date): Promise<ReviewAssignmentDiscovery[]> {
+    const results: ReviewAssignmentDiscovery[] = [];
+
+    for (const repoKey of repos) {
+      const slash = repoKey.indexOf("/");
+      if (slash <= 0 || slash === repoKey.length - 1) {
+        log.warn({ repoKey }, "getOpenReviewChanges: invalid repo key, expected owner/repo");
+        continue;
+      }
+      const owner = repoKey.slice(0, slash);
+      const repo = repoKey.slice(slash + 1);
+
+      try {
+        const PER_PAGE = 100;
+        for (let page = 1; ; page++) {
+          const batch = GitHubUpdatedPrListSchema.parse(await this.fetchJson(
+            `${this.config.apiBaseUrl}/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${page}`,
+          ));
+          for (const pr of batch) {
+            if (Date.parse(pr.updated_at) <= since.getTime()) continue;
+            results.push({
+              changeId: `${repoKey}#${pr.number}`,
+              project: repoKey,
+              subject: pr.title,
+              revision: pr.head.sha,
+            });
+          }
+          if (batch.length < PER_PAGE || batch.some((pr) => Date.parse(pr.updated_at) <= since.getTime())) break;
+        }
+      } catch (err) {
+        log.warn({ repoKey, err }, "getOpenReviewChanges: failed to fetch PRs");
+      }
+    }
+
+    log.debug({ repos: repos.length, found: results.length }, "automatic review poll complete");
     return results;
   }
 
