@@ -454,11 +454,20 @@ export class OpenShellClient {
     }
   }
 
-  /** Delete a gateway provider after every attached sandbox has been removed. */
+  /**
+   * Delete a gateway provider after every attached sandbox has been removed.
+   * `sandbox delete` returns before the gateway finishes tearing the sandbox
+   * down, so retry while the provider is still reported as attached.
+   */
   async removeProvider(name: string): Promise<void> {
-    const result = await this.exec(["provider", "delete", name]);
-    if (result.code !== 0 && !/provider[^\n]*not found|not found[^\n]*provider/i.test(result.stderr)) {
-      throw new Error(`openshell provider delete failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+    const maxAttempts = 5;
+    for (let attempt = 1; ; attempt++) {
+      const result = await this.exec(["provider", "delete", name]);
+      if (result.code === 0 || /provider[^\n]*not found|not found[^\n]*provider/i.test(result.stderr)) return;
+      if (attempt >= maxAttempts || !/attached to sandbox/i.test(result.stderr)) {
+        throw new Error(`openshell provider delete failed (${result.code}): ${redactOpenShellText(result.stderr).slice(0, 500)}`);
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, this.retryBaseDelayMs * attempt));
     }
   }
 

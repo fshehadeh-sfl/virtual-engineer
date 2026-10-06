@@ -764,6 +764,43 @@ describe("OpenShellClient", () => {
     await expect(client.removeProvider("ve-task-1-agent")).resolves.toBeUndefined();
   });
 
+  it("retries provider deletion while a just-deleted sandbox is still attached", async () => {
+    const attached = {
+      code: 1,
+      stdout: "",
+      stderr: "provider 've-task-1-agent' is attached to sandbox(es): ve-task-1",
+    };
+    const results = [attached, attached, { code: 0, stdout: "", stderr: "" }];
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (_bin, args) => {
+      calls.push(args);
+      return results.shift() ?? { code: 0, stdout: "", stderr: "" };
+    };
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).resolves.toBeUndefined();
+    expect(calls).toHaveLength(3);
+  });
+
+  it("gives up on provider deletion when the sandbox stays attached", async () => {
+    const { runner, calls } = runnerReturning({
+      code: 1,
+      stderr: "provider 've-task-1-agent' is attached to sandbox(es): ve-task-1",
+    });
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).rejects.toThrow(/attached to sandbox/);
+    expect(calls).toHaveLength(5);
+  });
+
+  it("does not retry provider deletion for unrelated failures", async () => {
+    const { runner, calls } = runnerReturning({ code: 1, stderr: "permission denied" });
+    const client = new OpenShellClient({ runner, retryBaseDelayMs: 0 });
+
+    await expect(client.removeProvider("ve-task-1-agent")).rejects.toThrow(/permission denied/);
+    expect(calls).toHaveLength(1);
+  });
+
   it("checks gateway health through the authenticated OpenShell CLI profile", async () => {
     const { runner, calls } = runnerReturning({ code: 0, stdout: "Gateway connected" });
     const client = new OpenShellClient({ runner });
