@@ -22,6 +22,17 @@ describe("decodeReviewWorkerOutput", () => {
     }))).toBe(rawOutput);
   });
 
+  it("decodes the final envelope line when OpenShell logs precede it on stdout", () => {
+    const envelope = JSON.stringify({ status: "success", rawOutput: '{"score":1}', modifiedFiles: [] });
+    const stdout = [
+      "2026-10-06T15:44:54.936784Z  WARN openshell: OIDC token refresh failed: no refresh token available",
+      envelope,
+      "",
+    ].join("\n");
+
+    expect(decodeReviewWorkerOutput(stdout)).toBe('{"score":1}');
+  });
+
   it("surfaces a failed worker summary", () => {
     expect(() => decodeReviewWorkerOutput(JSON.stringify({
       status: "failed",

@@ -125,7 +125,8 @@ export function createCommandRunner(deps: CommandRunnerDeps): CommandRunner {
     const child = deps.spawnCommand(bin, args, {
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...control?.environment },
+      // OpenShell writes tracing logs to stdout, which would corrupt parsed output.
+      env: { ...process.env, RUST_LOG: process.env["RUST_LOG"] ?? "error", ...control?.environment },
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
