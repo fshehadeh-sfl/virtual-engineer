@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppConfig } from "../../src/config.js";
+import type { LogContextResolver, LogEntityKind } from "../../src/logger.js";
 import type { AgentAdapter, AgentRecord, AgentResult, PromptStore, ReviewConnector, Integration, ProjectRecord, ProviderId, DomainCapability, TicketConnector, Task, WorkspaceRunner } from "../../src/interfaces.js";
 import type { PluginManager } from "../../src/plugins/pluginManager.js";
 import { buildRuntimeDependencies, configureAgentAdapters } from "../../src/bootstrap/runtimeBuilder.js";
@@ -287,6 +288,7 @@ async function importRuntime(
   const runnableProject = options.withRunnableProject;
   const stateStore = {
     close: vi.fn(),
+    resolveLogContext: vi.fn((kind: LogEntityKind, id: string) => ({ [`${kind}Name`]: id })),
     getIntegrations: vi.fn(async () => [...integrationData.values()]),
     getIntegration: vi.fn(async (id: string) => integrationData.get(id) ?? null),
     listProjects: vi.fn(async () =>
@@ -385,6 +387,7 @@ async function importRuntime(
   vi.doMock("../../src/config.js", () => ({
     getConfig: vi.fn(() => ({ ...baseConfig, ...(options.configOverrides ?? {}) })),
   }));
+  const setLogContextResolver = vi.fn<(resolver: LogContextResolver | null) => void>();
   vi.doMock("../../src/logger.js", () => ({
     getLogger: vi.fn(() => ({
       trace: vi.fn(),
@@ -394,6 +397,7 @@ async function importRuntime(
       error: vi.fn(),
       fatal: vi.fn(),
     })),
+    setLogContextResolver,
   }));
   vi.doMock("../../src/state/stateStore.js", async () => {
     const actual = await vi.importActual<typeof import("../../src/state/stateStore.js")>(
@@ -461,33 +465,36 @@ async function importRuntime(
   try {
     await import("../../src/index.js");
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const onSigterm = processOnSpy.mock.calls.find(([event]) => event === "SIGTERM")?.[1];
+    if (!onSigterm) throw new Error("SIGTERM handler was not registered");
+    return {
+      registerBuiltinPlugins,
+      PollingLoop,
+      PluginManager,
+      loadFromDatabase,
+      HttpRedmineConnector,
+      GerritSshConnector,
+      GitLabIssueConnector,
+      GitLabMergeRequestConnector,
+      CopilotAdapter,
+      OpenShellWorkspaceRunner,
+      Orchestrator,
+      createVcsConnectorForIntegration,
+      createAdminServer,
+      stateStore,
+      setLogContextResolver,
+      onSigterm,
+      pluginManagerInstance,
+      ReviewOrchestrator,
+      GerritSshReviewProvider,
+      PluginIntegrationStreamEventsManager,
+      integrationStreamEventsInstance,
+      reviewProviderInstances,
+    };
   } finally {
     processOnSpy.mockRestore();
     processExitSpy.mockRestore();
   }
-
-  return {
-    registerBuiltinPlugins,
-    PollingLoop,
-    PluginManager,
-    loadFromDatabase,
-    HttpRedmineConnector,
-    GerritSshConnector,
-    GitLabIssueConnector,
-    GitLabMergeRequestConnector,
-    CopilotAdapter,
-    OpenShellWorkspaceRunner,
-    Orchestrator,
-    createVcsConnectorForIntegration,
-    createAdminServer,
-    stateStore,
-    pluginManagerInstance,
-    ReviewOrchestrator,
-    GerritSshReviewProvider,
-    PluginIntegrationStreamEventsManager,
-    integrationStreamEventsInstance,
-    reviewProviderInstances,
-  };
 }
 
 describe("runtime bootstrap provider selection", () => {
@@ -497,6 +504,28 @@ describe("runtime bootstrap provider selection", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("registers log context lookups and clears them before closing the state store", async () => {
+    const runtime = await importRuntime();
+    expect(runtime.setLogContextResolver).toHaveBeenCalledTimes(1);
+    const resolver = runtime.setLogContextResolver.mock.calls[0]?.[0];
+    if (!resolver) throw new Error("Log context resolver was not registered");
+    expect(resolver("project", "p1")).toEqual({ projectName: "p1" });
+    expect(runtime.stateStore.resolveLogContext).toHaveBeenCalledWith("project", "p1");
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    try {
+      runtime.onSigterm();
+      await vi.waitFor(() => {
+        expect(runtime.stateStore.close).toHaveBeenCalledTimes(1);
+        expect(exitSpy).toHaveBeenCalledWith(0);
+      });
+      expect(runtime.setLogContextResolver).toHaveBeenNthCalledWith(2, null);
+      expect(runtime.setLogContextResolver).toHaveBeenCalledBefore(runtime.stateStore.close);
+    } finally {
+      exitSpy.mockRestore();
+    }
   });
 
   it("configures every active agent integration, not only the default adapter", () => {

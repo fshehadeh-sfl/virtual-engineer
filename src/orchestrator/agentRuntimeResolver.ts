@@ -23,7 +23,7 @@ export class AgentRuntimeResolver {
 
     const agent = await projectMode.projectStore.getAgentById(project.agentId);
     if (!agent) {
-      throw new Error(`Project agent ${project.agentId} was not found for project ${project.id}`);
+      throw new Error(`Project agent ${project.agentId} was not found for project "${project.name}" (${project.id})`);
     }
     if (!agent.enabled || agent.type !== "coding") {
       throw new Error(`Project agent ${agent.id} is not an enabled coding agent for project ${project.id}`);

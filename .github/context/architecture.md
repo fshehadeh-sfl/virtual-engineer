@@ -199,7 +199,18 @@ There is no `networkMode`, no `additionalDockerArgs`, and no `--read-only` / `--
 
 ## Logging
 
-Pino, module-scoped via `getLogger(...)`. Pretty in development, JSON in production, silent by default in tests.
+Pino, module-scoped via `getLogger(...)`. Pretty in development, JSON in
+production, silent by default in tests. After opening SQLite, `src/index.ts`
+registers a synchronous `SqliteStateStore.resolveLogContext()` lookup with
+`src/logger.ts`; shutdown clears the resolver before closing the store. The
+Pino log formatter adds names for integration, project, agent, user, and prompt
+IDs, and ticket/project context for task IDs. Lookup uses cached prepared
+primary-key queries, so names reflect renames without a restart. An explicit
+`projectId` controls which `projectName` is emitted even if the task belongs
+to another project; existing log fields take precedence. Missing rows or
+lookup failures leave the original record intact. See
+[configuration.md](configuration.md) for the enriched field names and
+[database.md](database.md#log-context-lookup) for the store contract.
 
 ## Deployment
 

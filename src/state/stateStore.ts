@@ -48,6 +48,20 @@ import type { UserStoreApi } from "./stores/userStore.js";
 import { createUserStore } from "./stores/userStore.js";
 import { runDatabaseMigrations } from "./databaseMigrations.js";
 import * as schema from "./schema.js";
+import type { LogEntityKind } from "../logger.js";
+
+const LOG_TICKET_TITLE_MAX = 80;
+
+const LOG_CONTEXT_QUERIES: Readonly<Record<LogEntityKind, string>> = {
+  integration: "SELECT name AS integrationName FROM integrations WHERE id = ?",
+  project: "SELECT name AS projectName FROM projects WHERE id = ?",
+  agent: "SELECT name AS agentName FROM agents WHERE id = ?",
+  task: `SELECT t.ticket_id AS ticketId, substr(t.ticket_title, 1, ${LOG_TICKET_TITLE_MAX}) AS ticketTitle,
+           t.project_id AS projectId, p.name AS projectName
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE t.task_id = ?`,
+  user: "SELECT username AS userName FROM users WHERE id = ?",
+  prompt: "SELECT label AS promptName FROM prompts WHERE id = ?",
+};
 
 type ComposedStoreApi =
   & TaskStoreApi
@@ -89,6 +103,7 @@ export class SqliteStateStore {
   private readonly denialStore: DenialStoreApi;
   private readonly openShellProviderStore: OpenShellProviderStoreApi;
   private readonly taskTransitionListeners: Array<(task: Task) => void> = [];
+  private readonly logContextStatements = new Map<LogEntityKind, Database.Statement>();
 
   constructor(private readonly raw: Database.Database) {
     this.dbDir = dirname(this.raw.name);
@@ -201,6 +216,25 @@ export class SqliteStateStore {
   /** Close the underlying SQLite database connection. */
   close(): void {
     this.raw.close();
+  }
+
+  /**
+   * Synchronous readable-context lookup used to enrich log records (names,
+   * ticket IDs). Raw primary-key queries keep names current after renames.
+   */
+  resolveLogContext(kind: LogEntityKind, id: string): Record<string, string> | undefined {
+    let statement = this.logContextStatements.get(kind);
+    if (!statement) {
+      statement = this.raw.prepare(LOG_CONTEXT_QUERIES[kind]);
+      this.logContextStatements.set(kind, statement);
+    }
+    const row = statement.get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    const context: Record<string, string> = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value === "string" && value !== "") context[key] = value;
+    }
+    return Object.keys(context).length > 0 ? context : undefined;
   }
 
   /** Convenience helper: fetch the ProjectRecord bound to a task via its projectId. */

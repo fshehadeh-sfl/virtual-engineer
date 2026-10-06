@@ -707,7 +707,7 @@ export class Orchestrator {
       }
       projectPushTargets = await this.projectMode.projectStore.listProjectPushTargets(task.projectId);
       if (projectPushTargets.length === 0) {
-        throw new Error(`Project ${task.projectId} has no push targets configured`);
+        throw new Error(`Project "${projectRecord.name}" (${task.projectId}) has no push targets configured`);
       }
       const existingChanges = await this.stateStore.getChangesForTask(task.taskId);
       for (const change of existingChanges) {

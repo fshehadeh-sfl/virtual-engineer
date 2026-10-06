@@ -1417,3 +1417,31 @@ describe("SqliteStateStore — retryTask re-attaches orphaned tasks", () => {
     expect(retried.state).toBe("DETECTED");
   });
 });
+
+describe("SqliteStateStore — log entity names", () => {
+  let store: SqliteStateStore;
+
+  beforeEach(async () => {
+    store = await SqliteStateStore.create(tempDbPath());
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it("resolves readable log context synchronously by ID", async () => {
+    await store.upsertIntegration({ id: "int-1", provider: "redmine", name: "Main Redmine", configJson: "{}", enabled: true });
+    const agent = await makeAgent(store, { name: "Coder" });
+    const project = await store.createProject({ name: "PLATFORM", type: "coding", agentId: agent.id });
+    const taskId = makeTaskId(randomUUID());
+    await store.createTask(taskId, makeTicketId("4242"), "x".repeat(200), "", undefined, undefined, undefined, undefined, project.id);
+
+    expect(store.resolveLogContext("integration", "int-1")).toEqual({ integrationName: "Main Redmine" });
+    expect(store.resolveLogContext("agent", agent.id)).toEqual({ agentName: "Coder" });
+    expect(store.resolveLogContext("project", project.id)).toEqual({ projectName: "PLATFORM" });
+    expect(store.resolveLogContext("task", taskId)).toEqual({
+      ticketId: "4242", ticketTitle: "x".repeat(80), projectId: project.id, projectName: "PLATFORM",
+    });
+    expect(store.resolveLogContext("project", "missing")).toBeUndefined();
+  });
+});
