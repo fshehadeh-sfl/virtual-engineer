@@ -10,7 +10,7 @@
  * effect without a process restart.
  */
 import { getConfig } from "./config.js";
-import { getLogger } from "./logger.js";
+import { getLogger, setLogContextResolver } from "./logger.js";
 import { SqliteStateStore } from "./state/stateStore.js";
 import { HostGitExecutor } from "./workspace/hostGitExecutor.js";
 import { OpenShellWorkspaceRunner, type OpenShellRunnerDeps } from "./workspace/openShellWorkspaceRunner.js";
@@ -62,6 +62,7 @@ async function main(): Promise<void> {
 
   // ─── State Store ────────────────────────────────────────────────────────────
   const stateStore = await SqliteStateStore.create(config.databasePath);
+  setLogContextResolver((kind, id) => stateStore.resolveLogContext(kind, id));
 
   // A previous crash or forced restart can leave a task stuck in an "actively
   // executing" state (AGENT_RUNNING / REVIEW_RUNNING / REVIEW_COMMENTING) even
@@ -608,6 +609,7 @@ async function main(): Promise<void> {
     await integrationStreamEvents.stopAll();
 
     try {
+      setLogContextResolver(null);
       await Promise.resolve(stateStore.close());
     } catch (err) {
       log.error({ err }, "failed to close state store cleanly during shutdown");

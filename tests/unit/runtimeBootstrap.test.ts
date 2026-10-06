@@ -394,6 +394,7 @@ async function importRuntime(
       error: vi.fn(),
       fatal: vi.fn(),
     })),
+    setLogContextResolver: vi.fn(),
   }));
   vi.doMock("../../src/state/stateStore.js", async () => {
     const actual = await vi.importActual<typeof import("../../src/state/stateStore.js")>(

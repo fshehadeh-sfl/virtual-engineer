@@ -72,4 +72,59 @@ describe("getLogger", () => {
       level: "debug",
     }));
   });
+
+  it("adds entity names right after integration, project, agent, user, and prompt IDs", async () => {
+    const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
+    setLogContextResolver((kind, id) => ({ [`${kind}Name`]: `${id}-name` }));
+
+    const enriched = enrichLogFields({ integrationId: "i1", projectId: "p1", agentId: "a1", userId: "u1", promptId: "pr1", other: 1 });
+    expect(Object.entries(enriched)).toEqual([
+      ["integrationId", "i1"], ["integrationName", "i1-name"],
+      ["projectId", "p1"], ["projectName", "p1-name"],
+      ["agentId", "a1"], ["agentName", "a1-name"],
+      ["userId", "u1"], ["userName", "u1-name"],
+      ["promptId", "pr1"], ["promptName", "pr1-name"],
+      ["other", 1],
+    ]);
+  });
+
+  it("adds ticket and project context for task IDs, resolving the task's project name", async () => {
+    const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
+    setLogContextResolver((kind, id) => {
+      if (kind === "task") return { ticketId: "#42", projectId: "p1" };
+      if (kind === "project") return { projectName: `${id}-name` };
+      return undefined;
+    });
+
+    expect(enrichLogFields({ taskId: "t1", msgField: "x" })).toEqual({
+      taskId: "t1", ticketId: "#42", projectId: "p1", projectName: "p1-name", msgField: "x",
+    });
+    // Explicit fields on the record win over resolved context.
+    expect(enrichLogFields({ taskId: "t1", ticketId: "explicit" })).toEqual({
+      taskId: "t1", projectId: "p1", projectName: "p1-name", ticketId: "explicit",
+    });
+  });
+
+  it("keeps explicit names, skips unknown IDs, and survives resolver failures", async () => {
+    const { enrichLogFields, setLogContextResolver } = await import("../../src/logger.js");
+    setLogContextResolver((kind) => {
+      if (kind === "agent") throw new Error("db closed");
+      return kind === "project" ? undefined : { integrationName: "resolved" };
+    });
+
+    const input = { integrationId: "i1", integrationName: "explicit", projectId: "p1", agentId: "a1" };
+    expect(enrichLogFields(input)).toEqual(input);
+
+    setLogContextResolver(null);
+    expect(enrichLogFields({ projectId: "p1" })).toEqual({ projectId: "p1" });
+  });
+
+  it("wires name enrichment into the pino log formatter", async () => {
+    const { setLogContextResolver, getLogger } = await import("../../src/logger.js");
+    setLogContextResolver(() => ({ projectName: "Main" }));
+    getLogger("main");
+
+    const options = (pinoMock.mock.calls[0] as unknown as [{ formatters: { log: (o: Record<string, unknown>) => Record<string, unknown> } }])[0];
+    expect(options.formatters.log({ projectId: "p1" })).toEqual({ projectId: "p1", projectName: "Main" });
+  });
 });

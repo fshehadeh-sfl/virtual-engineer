@@ -17,7 +17,7 @@ All variables are optional. Only system/infra settings remain in the environment
 | Var | Default | Notes |
 |---|---|---|
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. `test` silences the logger by default. |
-| `LOG_LEVEL` | `info` | Pino level. |
+| `LOG_LEVEL` | `info` | Pino level. Log records are enriched from the database (wired in `src/index.ts`): `integrationId`, `projectId`, `agentId`, `userId`, `promptId` gain `integrationName` / `projectName` / `agentName` / `userName` / `promptName`; `taskId` gains `ticketId`, `ticketTitle` (≤80 chars), `projectId`, and `projectName`. Explicit fields win. |
 | `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. Its directory also holds `ssh/known_hosts`, the VE-managed trust-on-first-use file used for SSH hosts without a configured known_hosts path. |
 
 ### Admin server
