@@ -341,7 +341,7 @@ describe("ConfigPageSurface", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Regenerate key" }));
 
-      expect(await screen.findByDisplayValue("ssh-ed25519 AAAANEW virtual-engineer-gerrit")).toBeDefined();
+      expect((await screen.findByLabelText("Generated SSH public key")).textContent).toBe("ssh-ed25519 AAAANEW virtual-engineer-gerrit");
       expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       vi.unstubAllGlobals();

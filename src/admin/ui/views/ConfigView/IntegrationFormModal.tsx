@@ -535,12 +535,25 @@ function SshAuthSection({ provider, providerName, config, onConfigChange }: SshA
             <>
               <div style={{ fontSize: "12.5px", color: "var(--ok)", fontWeight: 500 }}>✓ Key configured — save the integration to persist it</div>
               <div style={{ position: "relative" }}>
-                <FieldTextarea
-                  value={pubKey}
-                  readOnly
-                  style={{ fontFamily: "var(--font-mono)", fontSize: "11px", minHeight: "60px", paddingRight: "64px" }}
-                  onChange={() => { /* read-only */ }}
-                />
+                <pre
+                  aria-label="Generated SSH public key"
+                  style={{
+                    margin: 0,
+                    padding: "10px 72px 10px 12px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "11px",
+                    lineHeight: 1.5,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
+                    userSelect: "all",
+                    background: "var(--panel-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "6px",
+                    color: "var(--text)",
+                  }}
+                >
+                  {pubKey}
+                </pre>
                 <button
                   type="button"
                   className="btn sm ghost"
