@@ -338,6 +338,15 @@ export interface ReviewAssignmentDiscovery {
   subject?: string | undefined;
   /** Provider revision identity, when available, for avoiding repeated polling triggers. */
   revision?: string | undefined;
+  /** Provider last-update time, used to advance automatic discovery watermarks. */
+  updatedAt?: Date | undefined;
+}
+
+/** Result of an automatic review discovery scan. */
+export interface ReviewChangeDiscoveryResult {
+  changes: ReviewAssignmentDiscovery[];
+  /** False when any repository or page failed, so callers must not advance their watermark. */
+  complete: boolean;
 }
 
 /**
@@ -351,7 +360,7 @@ export interface ReviewAssignmentDiscovery {
 export interface ReviewDiscoveryConnector {
   getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]>;
   /** Discover open changes created or updated after automatic polling began. */
-  getOpenReviewChanges?(repos: string[], since: Date): Promise<ReviewAssignmentDiscovery[]>;
+  getOpenReviewChanges?(repos: string[], since: Date): Promise<ReviewChangeDiscoveryResult>;
   /** Return true when VE is still requested as a reviewer for one change. */
   hasReviewAssignment?(changeId: ExternalChangeId): Promise<boolean>;
 }

@@ -7,6 +7,7 @@ import type {
   ExternalChangeId,
   ReviewDiscoveryConnector,
   ReviewAssignmentDiscovery,
+  ReviewChangeDiscoveryResult,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { sanitizeErrorDetail } from "../utils/redactUrl.js";
@@ -547,8 +548,9 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
   }
 
   /** Discover open PRs touched after polling was enabled, including unassigned PRs. */
-  async getOpenReviewChanges(repos: string[], since: Date): Promise<ReviewAssignmentDiscovery[]> {
-    const results: ReviewAssignmentDiscovery[] = [];
+  async getOpenReviewChanges(repos: string[], since: Date): Promise<ReviewChangeDiscoveryResult> {
+    const changes: ReviewAssignmentDiscovery[] = [];
+    let complete = true;
 
     for (const repoKey of repos) {
       const slash = repoKey.indexOf("/");
@@ -559,30 +561,42 @@ export class GitHubPullRequestReviewConnector implements ReviewConnector, Review
       const owner = repoKey.slice(0, slash);
       const repo = repoKey.slice(slash + 1);
 
-      try {
-        const PER_PAGE = 100;
-        for (let page = 1; ; page++) {
-          const batch = GitHubUpdatedPrListSchema.parse(await this.fetchJson(
+      // Sorted by update time, so a scan stops at the first PR at or before
+      // `since`. Callers advance `since` after complete scans, keeping
+      // steady-state polls to a single page per repository.
+      const PER_PAGE = 100;
+      for (let page = 1; ; page++) {
+        let batch: z.infer<typeof GitHubUpdatedPrListSchema>;
+        try {
+          batch = GitHubUpdatedPrListSchema.parse(await this.fetchJson(
             `${this.config.apiBaseUrl}/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${page}`,
           ));
-          for (const pr of batch) {
-            if (Date.parse(pr.updated_at) <= since.getTime()) continue;
-            results.push({
-              changeId: `${repoKey}#${pr.number}`,
-              project: repoKey,
-              subject: pr.title,
-              revision: pr.head.sha,
-            });
-          }
-          if (batch.length < PER_PAGE || batch.some((pr) => Date.parse(pr.updated_at) <= since.getTime())) break;
+        } catch (err) {
+          complete = false;
+          log.warn({ repoKey, page, err }, "getOpenReviewChanges: failed to fetch PRs");
+          break;
         }
-      } catch (err) {
-        log.warn({ repoKey, err }, "getOpenReviewChanges: failed to fetch PRs");
+        let reachedSince = false;
+        for (const pr of batch) {
+          const updatedAt = new Date(pr.updated_at);
+          if (updatedAt.getTime() <= since.getTime()) {
+            reachedSince = true;
+            continue;
+          }
+          changes.push({
+            changeId: `${repoKey}#${pr.number}`,
+            project: repoKey,
+            subject: pr.title,
+            revision: pr.head.sha,
+            updatedAt,
+          });
+        }
+        if (batch.length < PER_PAGE || reachedSince) break;
       }
     }
 
-    log.debug({ repos: repos.length, found: results.length }, "automatic review poll complete");
-    return results;
+    log.debug({ repos: repos.length, found: changes.length, complete }, "automatic review poll complete");
+    return { changes, complete };
   }
 
   /** Return true while VE remains a requested reviewer on an open PR. */

@@ -380,6 +380,31 @@ describe("ReviewOrchestrator.startReviewTask", () => {
     expect(mocks.provider.isReviewer).toHaveBeenCalledTimes(2);
   });
 
+  it("limits a project-scoped trigger to the originating project", async () => {
+    const first = makeProject({ id: makeProjectId("scoped-first") });
+    const second = makeProject({ id: makeProjectId("scoped-second") });
+    mocks.store.findProjectsByReviewTarget.mockResolvedValue([first, second]);
+    mocks.store.getTaskByTicketId = vi.fn(async () => null);
+    mocks.store.getProjectReviewConfig = vi.fn(async () => ({
+      integrationId: "gerrit-1",
+      repos: ["p"],
+      assignmentMode: "automatic" as const,
+    }));
+    mocks.provider.ensureReviewerAssignment = vi.fn(async () => true);
+
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+    const tasks = await orch.startReviewTask({
+      changeId: CHANGE_ID,
+      triggerCause: "revision",
+      projectIds: [second.id],
+    });
+
+    expect(tasks).toHaveLength(1);
+    const arg = mocks.store.createReviewTask.mock.calls[0]?.[0] as { projectId?: string };
+    expect(arg.projectId).toBe(second.id);
+    expect(mocks.store.getProjectReviewConfig).toHaveBeenCalledTimes(1);
+  });
+
   it("does not backfill an automatic project from an assignment discovery event", async () => {
     mocks.store.getProjectReviewConfig = vi.fn(async () => ({
       integrationId: "gerrit-1",

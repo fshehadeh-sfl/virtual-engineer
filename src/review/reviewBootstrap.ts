@@ -578,7 +578,7 @@ export function buildReviewTrigger(
     async triggerReviewForChange(
       integrationId: string,
       changeId: string,
-      options?: { force?: boolean; triggerCause?: ReviewTriggerCause },
+      options?: { force?: boolean; triggerCause?: ReviewTriggerCause; projectId?: string },
     ): Promise<void> {
       const bundle = await buildReviewBundle(pluginManager, workspaceBaseDir, stateStore, workspaceRunner, concurrencyTracker, integrationId, lifecycleCoordinator);
       if (!bundle.orchestrator || !bundle.provider || !bundle.integration) {
@@ -600,6 +600,7 @@ export function buildReviewTrigger(
           changeId: gerritChangeId,
           ...(force ? { force: true } : {}),
           triggerCause,
+          ...(options?.projectId !== undefined ? { projectIds: [options.projectId] } : {}),
         });
       } catch (err) {
         log.error({ err, integrationId, changeId }, "review trigger: failed to create review task");

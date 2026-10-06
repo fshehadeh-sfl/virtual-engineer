@@ -153,6 +153,12 @@ export interface StartReviewInput {
   force?: boolean;
   /** Identifies whether the trigger came from a revision or a reviewer assignment. */
   triggerCause?: ReviewTriggerCause | undefined;
+  /**
+   * Restricts the trigger to these VE projects. Project-scoped discovery
+   * (polling) sets this so one binding's discovery never starts reviews for
+   * another binding that shares the repository.
+   */
+  projectIds?: readonly string[] | undefined;
 }
 
 /**
@@ -211,10 +217,14 @@ export class ReviewOrchestrator {
       }
     }
 
-    const projects = await this.deps.stateStore.findProjectsByReviewTarget(
+    const targetProjects = await this.deps.stateStore.findProjectsByReviewTarget(
       this.deps.integrationId,
       details.project
     );
+    const projectScope = input.projectIds ? new Set(input.projectIds) : undefined;
+    const projects = projectScope
+      ? targetProjects.filter((project) => projectScope.has(project.id))
+      : targetProjects;
     if (projects.length === 0) {
       log.info(
         { changeId: input.changeId, integrationId: this.deps.integrationId, gerritProject: details.project },

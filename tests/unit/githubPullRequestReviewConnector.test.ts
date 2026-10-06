@@ -586,7 +586,9 @@ describe("GitHubPullRequestReviewConnector", () => {
         ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
       );
 
-      expect(results.map((pr) => pr.changeId)).toEqual(["octocat/hello-world#10"]);
+      expect(results.complete).toBe(true);
+      expect(results.changes.map((pr) => pr.changeId)).toEqual(["octocat/hello-world#10"]);
+      expect(results.changes[0]?.updatedAt).toEqual(new Date("2026-10-06T14:01:00Z"));
       expect(fetchMock.mock.calls[0]?.[0]).toContain("sort=updated");
       expect(fetchMock.mock.calls[0]?.[0]).toContain("direction=desc");
       expect(fetchMock.mock.calls.some((call: unknown[]) => typeof call[0] === "string" && call[0].endsWith("/user"))).toBe(false);
@@ -609,8 +611,8 @@ describe("GitHubPullRequestReviewConnector", () => {
         ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
       );
 
-      expect(results).toHaveLength(101);
-      expect(results.at(-1)?.changeId).toBe("octocat/hello-world#101");
+      expect(results.changes).toHaveLength(101);
+      expect(results.changes.at(-1)?.changeId).toBe("octocat/hello-world#101");
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
@@ -631,9 +633,30 @@ describe("GitHubPullRequestReviewConnector", () => {
         ["octocat/hello-world"], new Date("2026-10-06T14:00:00Z"),
       );
 
-      expect(results).toHaveLength(501);
-      expect(results.at(-1)?.changeId).toBe("octocat/hello-world#501");
+      expect(results.changes).toHaveLength(501);
+      expect(results.changes.at(-1)?.changeId).toBe("octocat/hello-world#501");
       expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("keeps collected PRs but reports an incomplete scan when a later page fails", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, (_, index) => ({
+        ...githubPr,
+        number: index + 1,
+        updated_at: "2026-10-06T14:01:00Z",
+        requested_reviewers: [],
+      }))));
+      fetchMock.mockResolvedValueOnce(new Response("boom", { status: 502 }));
+      fetchMock.mockResolvedValueOnce(jsonResponse([
+        { ...githubPr, number: 7, updated_at: "2026-10-06T14:02:00Z", requested_reviewers: [] },
+      ]));
+
+      const results = await makeConnector().getOpenReviewChanges(
+        ["octocat/hello-world", "octocat/other"], new Date("2026-10-06T14:00:00Z"),
+      );
+
+      expect(results.complete).toBe(false);
+      expect(results.changes).toHaveLength(101);
+      expect(results.changes.at(-1)?.changeId).toBe("octocat/other#7");
     });
   });
 

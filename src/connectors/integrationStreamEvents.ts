@@ -22,7 +22,7 @@ export interface IntegrationEventStreamReviewTrigger {
   triggerReviewForChange(
     integrationId: string,
     changeId: string,
-    options?: { force?: boolean; triggerCause?: ReviewTriggerCause },
+    options?: { force?: boolean; triggerCause?: ReviewTriggerCause; projectId?: string },
   ): Promise<void>;
 }
 

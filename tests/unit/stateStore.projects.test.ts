@@ -964,6 +964,51 @@ describe("SqliteStateStore — Phase 2: project review config", () => {
     expect(await store.initializeAutomaticReviewPollingSince(project.id)).toEqual(since);
   });
 
+  it("advances the automatic review discovery watermark only from the observed value", async () => {
+    const agent = await makeAgent(store, { type: "review" });
+    const project = await store.createProject({ name: "Cursor", type: "review", agentId: agent.id });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.setProjectReviewConfig(project.id, "g1", ["repo/a"], "automatic");
+    const since = await store.initializeAutomaticReviewPollingSince(project.id);
+    const next = new Date(since.getTime() + 60_000);
+
+    expect(await store.advanceAutomaticReviewPollingSince(project.id, since, next)).toBe(true);
+    expect(await store.initializeAutomaticReviewPollingSince(project.id)).toEqual(next);
+
+    expect(await store.advanceAutomaticReviewPollingSince(project.id, since, new Date(next.getTime() + 60_000)))
+      .toBe(false);
+    expect(await store.advanceAutomaticReviewPollingSince(project.id, next, since)).toBe(false);
+    expect(await store.initializeAutomaticReviewPollingSince(project.id)).toEqual(next);
+
+    await store.updateProjectConfiguration(project.id, {
+      project: { name: "Renamed" },
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
+    });
+    expect(await store.initializeAutomaticReviewPollingSince(project.id)).toEqual(next);
+  });
+
+  it("saves review configuration over a malformed legacy binding", async () => {
+    const agent = await makeAgent(store, { type: "review" });
+    const project = await store.createProject({ name: "Broken", type: "review", agentId: agent.id });
+    await makeIntegration(store, "g1", "gerrit");
+    await store.setProjectReviewConfig(project.id, "g1", ["repo/a"], "automatic");
+
+    const db = new Database(dbPath);
+    db.prepare(
+      "UPDATE project_integration_bindings SET config_json = '{not json' " +
+      "WHERE project_id = ? AND capability = 'code_review'"
+    ).run(project.id);
+    db.close();
+
+    await store.setProjectReviewConfig(project.id, "g1", ["repo/a"], "automatic");
+    expect(await store.initializeAutomaticReviewPollingSince(project.id)).toBeInstanceOf(Date);
+    await store.updateProjectConfiguration(project.id, {
+      project: { name: "Fixed" },
+      reviewConfig: { integrationId: "g1", repoKeys: ["repo/a"], assignmentMode: "automatic" },
+    });
+    expect((await store.getProjectReviewConfig(project.id))?.assignmentMode).toBe("automatic");
+  });
+
   it("changes review assignment mode while a project task is active", async () => {
     const a = await makeAgent(store, { type: "review" });
     const p = await store.createProject({ name: "R", type: "review", agentId: a.id, enabled: true });

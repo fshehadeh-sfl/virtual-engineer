@@ -132,6 +132,7 @@ export interface ProjectStoreApi {
   ): Promise<void>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
   initializeAutomaticReviewPollingSince(projectId: ProjectId): Promise<Date>;
+  advanceAutomaticReviewPollingSince(projectId: ProjectId, expected: Date, next: Date): Promise<boolean>;
   findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]>;
   getProjectBinding(projectId: ProjectId, capability: DomainCapability): Promise<ProjectIntegrationBindingRecord | null>;
   listProjectBindings(projectId: ProjectId): Promise<ProjectIntegrationBindingRecord[]>;
@@ -287,7 +288,12 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
   ): number | undefined {
     if (assignmentMode !== "automatic") return undefined;
     if (previous?.integration_id !== integrationId) return nowSeconds;
-    const config: unknown = JSON.parse(previous.config_json);
+    let config: unknown;
+    try {
+      config = JSON.parse(previous.config_json);
+    } catch {
+      return nowSeconds;
+    }
     if (typeof config !== "object" || config === null || Array.isArray(config)) return nowSeconds;
     const old = config as Record<string, unknown>;
     const sameRepos = JSON.stringify(readStringArray(old["repos"]).sort()) ===
@@ -995,6 +1001,21 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     return Promise.resolve(new Date(since * 1000));
   }
 
+  /** Compare-and-set the automatic discovery watermark; it only moves forward. */
+  function advanceAutomaticReviewPollingSince(projectId: ProjectId, expected: Date, next: Date): Promise<boolean> {
+    const expectedSeconds = Math.floor(expected.getTime() / 1000);
+    const nextSeconds = Math.floor(next.getTime() / 1000);
+    if (nextSeconds <= expectedSeconds) return Promise.resolve(false);
+    const result = raw.prepare(
+      "UPDATE project_integration_bindings " +
+      "SET config_json = json_set(config_json, '$.automaticPollingSince', ?) " +
+      "WHERE project_id = ? AND capability = 'code_review' " +
+      "AND json_extract(config_json, '$.assignmentMode') = 'automatic' " +
+      "AND json_extract(config_json, '$.automaticPollingSince') = ?"
+    ).run(nextSeconds, projectId, expectedSeconds);
+    return Promise.resolve(result.changes > 0);
+  }
+
   async function findProjectsByReviewTarget(integrationId: string, repoKey: string): Promise<ProjectRecord[]> {
     const rows = raw
       .prepare(
@@ -1064,6 +1085,7 @@ export function createProjectStore(context: ProjectStoreContext): ProjectStoreAp
     setProjectReviewConfig,
     getProjectReviewConfig,
     initializeAutomaticReviewPollingSince,
+    advanceAutomaticReviewPollingSince,
     findProjectsByReviewTarget,
     getProjectBinding,
     listProjectBindings,
