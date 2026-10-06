@@ -168,14 +168,14 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
 
       const existing = this.handles.get(integration.id);
       if (!existing) {
-        this.startHandle(integration, parsed.config, 0);
+        this.safeStartHandle(integration, parsed.config, 0);
         continue;
       }
 
       if (!sameConfig(existing.config, parsed.config)) {
         this.backfilledIntegrations.delete(integration.id);
         this.stopHandle(integration.id);
-        this.startHandle(integration, parsed.config, 0);
+        this.safeStartHandle(integration, parsed.config, 0);
         continue;
       }
 
@@ -253,6 +253,28 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
   }
 
   /** Spawn a new SSH `gerrit stream-events` process for an integration and register its event handlers. */
+  /** Start a listener without letting one integration's synchronous failure block the others. */
+  private safeStartHandle(integration: Integration, config: GerritStreamConfig, reconnectCount: number): void {
+    try {
+      this.startHandle(integration, config, reconnectCount);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.handles.delete(integration.id);
+      this.pendingBackfillIntegrations.delete(integration.id);
+      this.statuses.set(integration.id, {
+        integrationId: integration.id,
+        integrationName: integration.name,
+        integrationType: integration.provider,
+        state: "error",
+        reconnectCount,
+        lastEventType: null,
+        lastEventAt: null,
+        lastError: message,
+      });
+      log.warn({ integrationId: integration.id, error: message }, "cannot start Gerrit stream-events listener");
+    }
+  }
+
   private startHandle(integration: Integration, config: GerritStreamConfig, reconnectCount: number): void {
     log.info(
       { integrationId: integration.id, integrationName: integration.name, sshHost: config.sshHost, sshPort: config.sshPort, sshUser: config.sshUser },
@@ -391,7 +413,7 @@ export class GerritStreamEventsManager implements IntegrationEventStreamManager 
         }
         return;
       }
-      this.startHandle(nextIntegration, parsed.config, status.reconnectCount);
+      this.safeStartHandle(nextIntegration, parsed.config, status.reconnectCount);
     }, this.reconnectDelayMs);
     this.pendingReconnects.set(integrationId, { timer, config: handle.config });
   }
@@ -712,6 +734,9 @@ function parseGerritStreamConfig(integration: Integration):
   if (!sshHost || !sshUser || !Number.isFinite(sshPort) || sshPort <= 0) {
     return { success: false, error: "Gerrit stream-events requires sshHost, sshUser, and sshPort" };
   }
+  const sshKnownHostsPath = typeof cfg["sshKnownHostsPath"] === "string" && cfg["sshKnownHostsPath"].trim() !== ""
+    ? cfg["sshKnownHostsPath"].trim()
+    : undefined;
 
   return {
     success: true,
@@ -721,9 +746,7 @@ function parseGerritStreamConfig(integration: Integration):
       sshPort,
       ...(sshKeyPath !== undefined ? { sshKeyPath } : {}),
       ...(sshAgentPubKeyPath !== undefined ? { sshAgentPubKeyPath } : {}),
-      ...(typeof cfg["sshKnownHostsPath"] === "string" && cfg["sshKnownHostsPath"].trim() !== ""
-        ? { sshKnownHostsPath: cfg["sshKnownHostsPath"].trim() }
-        : {}),
+      ...(sshKnownHostsPath !== undefined ? { sshKnownHostsPath } : {}),
     },
   };
 }

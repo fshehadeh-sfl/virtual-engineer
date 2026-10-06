@@ -204,6 +204,7 @@ const GERRIT_INTEGRATION: Integration = {
     sshPort: 29418,
     sshUser: "ve",
     sshKeyPath: "/keys/id_rsa",
+    sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
     repoCloneUrl: "ssh://ve@gerrit.test:29418/demo",
   }),
   enabled: false,

@@ -39,6 +39,7 @@ const mockConfig: GerritVcsConnectorConfig = {
   sshPort: 29418,
   sshUser: "virtual-engineer",
   sshKeyPath: "/home/user/.ssh/id_rsa",
+  sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
   gitAuthorName: "Virtual Engineer",
   gitAuthorEmail: "ve@example.com",
 };
@@ -135,12 +136,16 @@ describe("GerritVcsConnector", () => {
   });
 
   describe("GIT_SSH_COMMAND / known-hosts policy", () => {
-    it("includes UserKnownHostsFile=/dev/null when sshKnownHostsPath is not set", async () => {
-      await connector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
+    it("trusts the host key on first use when sshKnownHostsPath is not set", async () => {
+      const tofuConnector = new GerritVcsConnector({
+        ...mockConfig,
+        sshKnownHostsPath: undefined,
+      }, gitRunner);
 
+      await tofuConnector.clone("ssh://gerrit.example.com:29418/repo.git", "main", "/tmp/repo");
       const sshCommand = gitRunner.calls[0]?.options.env?.["GIT_SSH_COMMAND"];
-      expect(sshCommand).toContain("StrictHostKeyChecking=no");
-      expect(sshCommand).toContain("UserKnownHostsFile=/dev/null");
+      expect(sshCommand).toContain("StrictHostKeyChecking=accept-new");
+      expect(sshCommand).not.toContain("StrictHostKeyChecking=no");
     });
 
     it("uses strict host-key checking when sshKnownHostsPath is set", async () => {

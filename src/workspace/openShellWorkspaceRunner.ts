@@ -32,6 +32,7 @@ import type {
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { credentialFreeUrl, type HostGitExecutor } from "./hostGitExecutor.js";
+import { isSshRemoteUrl } from "../utils/gitRemoteUrl.js";
 import type { OpenShellClient } from "../openshell/openShellClient.js";
 import { redactOpenShellText } from "../openshell/openShellClient.js";
 import { AgentWorkerProtocolError, decodeReviewWorkerOutput } from "./agentWorkerProtocol.js";
@@ -260,7 +261,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
         root.targetBranch,
         root.localPath,
         root.sshKeyPath,
-        sshKnownHostsPath,
+        isSshRemoteUrl(root.cloneUrl) ? root.sshKnownHostsPath ?? sshKnownHostsPath : undefined,
         signal,
       );
       this.rememberTrustedRemote(handle.containerId, root.localPath, root.cloneUrl);
@@ -273,7 +274,7 @@ export class OpenShellWorkspaceRunner implements WorkspaceRunner {
             target.targetBranch,
             target.localPath,
             target.sshKeyPath,
-            sshKnownHostsPath,
+            target.sshKnownHostsPath ?? undefined,
             signal,
           );
           this.rememberTrustedRemote(handle.containerId, target.localPath, target.cloneUrl);

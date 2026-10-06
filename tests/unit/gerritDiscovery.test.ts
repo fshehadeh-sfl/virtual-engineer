@@ -35,6 +35,7 @@ describe("listRepositoriesViaSsh", () => {
       user: "ve",
       port: 29418,
       keyPath: "/key",
+      knownHostsPath: "/tmp/known_hosts",
     });
 
     expect(repos).toEqual([
@@ -64,6 +65,7 @@ describe("listRepositoriesViaSsh", () => {
       user: "ve",
       port: 29418,
       keyPath: "/key",
+      knownHostsPath: "/tmp/known_hosts",
     });
 
     expect(repos.map((repo) => repo.key)).toEqual(["active"]);
@@ -77,6 +79,7 @@ describe("listRepositoriesViaSsh", () => {
       user: "ve",
       port: 29418,
       keyPath: "/key",
+      knownHostsPath: "/tmp/known_hosts",
     })).rejects.toThrow(/non-JSON output/);
   });
 });

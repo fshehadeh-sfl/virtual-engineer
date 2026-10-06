@@ -4,7 +4,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { ApiError, api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration, ReviewAssignmentMode } from "../../types.ts";
-import { ProjectSkillSourcesField, buildSkillSourcesPayload, preloadedProjectSkillSourceRow, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
+import { ProjectSkillSourcesField, buildSkillSourcesPayload, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 import { RepositoryKeyField, RepositoryKeysField, TargetBranchField, TicketProjectKeyField } from "./ProjectFormFields.tsx";
 import {
   VENDOR_ORIGIN_LABELS,
@@ -134,7 +134,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   const [name, setName] = useState("");
   const [agentId, setAgentId] = useState("");
   const [postCloneScript, setPostCloneScript] = useState("");
-  const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>(() => project === undefined ? [preloadedProjectSkillSourceRow()] : []);
+  const [skillSourceRows, setSkillSourceRows] = useState<SkillSourceRow[]>([]);
   const [gerritTopicOverride, setGerritTopicOverride] = useState("");
   const [useFullTicketUrlInCommits, setUseFullTicketUrlInCommits] = useState(false);
   const [postReviewLinkToTicket, setPostReviewLinkToTicket] = useState(false);

@@ -13,7 +13,7 @@ import type {
   ExternalChangeId,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
-import { GerritSshClient } from "./gerritSshClient.js";
+import { GerritSshClient, buildSshHostKeyOptions } from "./gerritSshClient.js";
 
 const log = getLogger("gerrit-connector");
 const execFileAsync = promisify(execFile);
@@ -52,14 +52,13 @@ function buildDiscoveryIdentityArgs(ssh: GerritSshDiscoveryConfig): string[] {
 export async function listRepositoriesViaSsh(
   ssh: GerritSshDiscoveryConfig
 ): Promise<DiscoveredRepository[]> {
+  const hostKeyOptions = buildSshHostKeyOptions(ssh.knownHostsPath);
   const { stdout } = await execFileAsync(
     "ssh",
     [
       "-p", String(ssh.port),
       ...buildDiscoveryIdentityArgs(ssh),
-      ...(ssh.knownHostsPath
-        ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${ssh.knownHostsPath}`]
-        : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
+      ...hostKeyOptions,
       `${ssh.user}@${ssh.host}`,
       "gerrit", "ls-projects", "--format", "JSON",
     ],
@@ -110,12 +109,11 @@ export async function listBranchesViaSsh(
   ssh: GerritSshDiscoveryConfig,
   repoKey: string
 ): Promise<string[]> {
+  const hostKeyOptions = buildSshHostKeyOptions(ssh.knownHostsPath);
   const sshArgs = [
     "-p", String(ssh.port),
     ...buildDiscoveryIdentityArgs(ssh),
-    ...(ssh.knownHostsPath
-      ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${ssh.knownHostsPath}`]
-      : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
+    ...hostKeyOptions,
   ];
   const repoUrl = `ssh://${ssh.user}@${ssh.host}:${ssh.port}/${repoKey}`;
   const { stdout } = await execFileAsync(
@@ -209,6 +207,7 @@ export class GerritSshConnector implements ReviewConnector {
       user: ssh?.user ?? this.config.ssh.user,
       port: ssh?.port ?? this.config.ssh.port,
       keyPath: this.config.ssh.keyPath,
+      ...(this.config.ssh.knownHostsPath !== undefined ? { knownHostsPath: this.config.ssh.knownHostsPath } : {}),
     });
   }
 

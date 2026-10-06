@@ -37,9 +37,10 @@ export function buildAuthenticatedCloneUrlFromPlaintextToken(
 }
 
 /**
- * Resolve the strict SSH known-hosts path for the clone step from the root
- * push target's VCS connector. Returns undefined (non-fatal — clone proceeds
- * without strict host key checking) if the connector can't be resolved.
+ * Resolve the SSH known-hosts path for the clone step from the root push
+ * target's VCS connector. Returns undefined when none is configured or the
+ * connector can't be resolved; SSH clones then fall back to trust-on-first-use
+ * against the VE-managed known_hosts file.
  */
 export async function resolveCloneKnownHostsPath(
   root: ProjectPushTargetRecord,

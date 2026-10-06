@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { Server } from "node:http";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { SqliteStateStore } from "../../src/state/stateStore.js";
 import { createAdminServer, type AdminServerDependencies } from "../../src/admin/adminServer.js";
 import { Router } from "../../src/admin/router.js";
@@ -12,6 +14,9 @@ import { tempDatabasePath } from "./helpers/tempDatabase.js";
 function tempDbPath(): string {
   return tempDatabasePath("ve-admin-projects");
 }
+
+const TEST_SECRETS_DIR = join(process.cwd(), "secrets");
+const TEST_KNOWN_HOSTS_PATH = join(TEST_SECRETS_DIR, "ve-admin-projects-known_hosts");
 
 interface FetchResult { status: number; body: Record<string, unknown> | null; }
 
@@ -98,6 +103,8 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
   beforeEach(async () => {
     registerBuiltinPlugins();
+    mkdirSync(TEST_SECRETS_DIR, { recursive: true });
+    writeFileSync(TEST_KNOWN_HOSTS_PATH, "skills.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestHostKey\n", "utf8");
     store = await SqliteStateStore.create(tempDbPath());
     const deps = makeDeps(store);
     server = createAdminServer(deps);
@@ -106,6 +113,7 @@ describe("Admin API — Project routes (/api/admin/projects)", () => {
 
   afterEach(async () => {
     await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    rmSync(TEST_KNOWN_HOSTS_PATH, { force: true });
     store.close();
   });
 
@@ -509,7 +517,7 @@ FetchContent_Declare(googletest
     try {
       const r = await rest(server, "/api/admin/projects/skill-sources/list", {
         method: "POST",
-        body: { source: "ssh://", sshPort: 29418 },
+        body: { source: "ssh://", sshPort: 29418, sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH },
       });
 
       expect(r.status).toBe(400);
@@ -526,7 +534,11 @@ FetchContent_Declare(googletest
     try {
       const r = await rest(server, "/api/admin/projects/skill-sources/list", {
         method: "POST",
-        body: { source: "ssh://skills.example.com:2222/org/agent-skills", sshPort: 29418 },
+        body: {
+          source: "ssh://skills.example.com:2222/org/agent-skills",
+          sshPort: 29418,
+          sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
+        },
       });
 
       expect(r.status).toBe(400);
@@ -1051,14 +1063,14 @@ FetchContent_Declare(googletest
         type: "review",
         name: "ValidateRemoteSkills",
         agentId: agent.id,
-        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 }],
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418, sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }],
         reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
       },
     });
 
     expect(r.status).toBe(201);
     expect(validateSkillSourcesConnection).toHaveBeenCalledWith([
-      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418 },
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshUser: "git-user", sshPort: 29418, sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH },
     ]);
   });
 
@@ -1079,7 +1091,7 @@ FetchContent_Declare(googletest
         type: "review",
         name: "BadRemoteSkills",
         agentId: agent.id,
-        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }],
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }],
         reviewConfig: { integrationId: "gerrit-1", repoKeys: ["platform/api"] },
       },
     });
@@ -1574,14 +1586,14 @@ FetchContent_Declare(googletest
       method: "PUT",
       body: {
         type: "review",
-        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }],
+        skillSources: [{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }],
       },
     });
 
     expect(r.status).toBe(200);
     const project = r.body?.["project"] as Record<string, unknown>;
     expect(project).not.toHaveProperty("skillDiscoveryEnabled");
-    expect(project["skillSources"]).toEqual([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"] }]);
+    expect(project["skillSources"]).toEqual([{ source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a"], sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }]);
   });
 
   it("DELETE /:id removes the project (idempotent: 404 second time)", async () => {

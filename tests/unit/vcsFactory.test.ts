@@ -55,6 +55,7 @@ describe("createVcsConnectorForIntegration", () => {
         sshPort: 29418,
         sshUser: "ve-bot",
         sshKeyPath: "/keys/id_rsa",
+        sshKnownHostsPath: "/keys/known_hosts",
         gitAuthorName: "Virtual Engineer",
         gitAuthorEmail: "ve@test.local",
       }),
@@ -106,7 +107,7 @@ describe("createVcsConnectorForIntegration", () => {
       const integration = makeIntegration({
         id: "gerrit-no-key",
         provider: "gerrit",
-        configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot" }),
+        configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot", sshKnownHostsPath: "/keys/known_hosts" }),
       });
       // sshKeyPath has a Zod default — should not throw
       const connector = createVcsConnectorForIntegration(integration);
@@ -128,7 +129,7 @@ describe("createVcsConnectorForIntegration", () => {
       const integration = makeIntegration({
         id: "gerrit-defaults",
         provider: "gerrit",
-        configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot" }),
+        configJson: JSON.stringify({ sshHost: "gerrit.local", sshUser: "ve-bot", sshKnownHostsPath: "/keys/known_hosts" }),
       });
       // Should not throw; connector uses schema defaults
       const connector = createVcsConnectorForIntegration(integration);
@@ -142,6 +143,7 @@ describe("createVcsConnectorForIntegration", () => {
         configJson: JSON.stringify({
           sshHost: "gerrit.local",
           sshUser: "ve-bot",
+          sshKnownHostsPath: "/keys/known_hosts",
           gitAuthorName: "Bot User",
           gitAuthorEmail: "bot@company.com",
         }),
@@ -270,6 +272,7 @@ describe("createVcsConnectorForIntegration", () => {
         configJson: JSON.stringify({
           sshHost: "gerrit.local",
           sshUser: "ve-bot",
+          sshKnownHostsPath: "/keys/known_hosts",
         }),
       });
 
@@ -294,5 +297,3 @@ describe("createVcsConnectorForIntegration", () => {
     });
   });
 });
-
-
