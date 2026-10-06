@@ -894,6 +894,7 @@ describe("runtime bootstrap provider selection", () => {
             sshHost: "db-gerrit-ssh.test",
             sshUser: "virtual-reviewer",
             gitAuthorEmail: "configured@example.com",
+            sshKnownHostsPath: "/keys/known_hosts",
           }),
         }),
       },

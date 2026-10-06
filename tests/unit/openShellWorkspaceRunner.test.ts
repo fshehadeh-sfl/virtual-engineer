@@ -325,6 +325,30 @@ describe("OpenShellWorkspaceRunner", () => {
     expect((cloneRepo.mock.calls[0] ?? [])[1]).toBe("u1"); // root cloned first
   });
 
+  it("uses each push target's own known_hosts file when cloning mixed remotes", async () => {
+    const cloneRepo = vi.fn().mockResolvedValue(undefined);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit({ cloneRepo }), client: fakeClient() });
+    const targets = [
+      { repoKey: "root", cloneUrl: "https://example.com/root", targetBranch: "main", role: "primary", commitOrder: 1, localPath: ".", integrationId: "http", sshKeyPath: null, sshKnownHostsPath: null },
+      { repoKey: "a", cloneUrl: "git@a.example:repo", targetBranch: "main", role: "dependency", commitOrder: 2, localPath: "libs/a", integrationId: "a", sshKeyPath: null, sshKnownHostsPath: "/keys/a" },
+      { repoKey: "b", cloneUrl: "b.example:repo", targetBranch: "main", role: "dependency", commitOrder: 3, localPath: "libs/b", integrationId: "b", sshKeyPath: null, sshKnownHostsPath: "/keys/b" },
+    ] as unknown as ProjectPushTargetRecord[];
+    const result = await runner.prepareProjectWorkspace(handle, targets, undefined, "/keys/root");
+    expect(result.success).toBe(true);
+    expect(cloneRepo.mock.calls.map((call) => call[5])).toEqual([undefined, "/keys/a", "/keys/b"]);
+  });
+
+  it("prefers the root target's trust file over a legacy root-path fallback", async () => {
+    const cloneRepo = vi.fn().mockResolvedValue(undefined);
+    const runner = new OpenShellWorkspaceRunner({ git: fakeGit({ cloneRepo }), client: fakeClient() });
+    const targets = [{
+      repoKey: "root", cloneUrl: "git@root.example:repo", targetBranch: "main", role: "primary",
+      commitOrder: 1, localPath: ".", integrationId: "root", sshKeyPath: null, sshKnownHostsPath: "/keys/root",
+    }] as unknown as ProjectPushTargetRecord[];
+    expect((await runner.prepareProjectWorkspace(handle, targets, undefined, "/keys/legacy")).success).toBe(true);
+    expect(cloneRepo.mock.calls[0]?.[5]).toBe("/keys/root");
+  });
+
   it("runs the configured post-clone script inside the sandbox", async () => {
     const execInSandbox = vi.fn()
       .mockResolvedValueOnce({ code: 0, stdout: "installed", stderr: "" })

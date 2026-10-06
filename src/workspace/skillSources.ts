@@ -1,3 +1,6 @@
+import { isSshRemoteUrl } from "../utils/gitRemoteUrl.js";
+import { resolveSshHostKeyPolicy } from "../utils/sshHostKeys.js";
+
 export type AgentProvider = "copilot" | "claude" | "goose" | "codex" | "opencode";
 
 export interface RemoteSkillSource {
@@ -83,11 +86,13 @@ function skillSourceSubprocessEnv(): NodeJS.ProcessEnv {
 export function buildSkillSourceSubprocessEnv(source: SkillSourceConnectionInput): NodeJS.ProcessEnv {
   const env = skillSourceSubprocessEnv();
   if (!isSshSkillSource(source)) return env;
-  if (!source.sshKeyPath) copyEnv(process.env, "SSH_AUTH_SOCK", env);
   const sshPort = sshSkillSourceCommandPort(source);
-  const hostKeyOpts = source.sshKnownHostsPath
-    ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${quoteSshArg(source.sshKnownHostsPath)}`]
-    : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];
+  if (!source.sshKeyPath) copyEnv(process.env, "SSH_AUTH_SOCK", env);
+  const hostKeys = resolveSshHostKeyPolicy(source.sshKnownHostsPath);
+  const hostKeyOpts = [
+    "-o", `StrictHostKeyChecking=${hostKeys.strictHostKeyChecking}`,
+    "-o", `UserKnownHostsFile=${quoteSshArg(hostKeys.knownHostsPath)}`,
+  ];
   return {
     ...env,
     GIT_SSH_COMMAND: [
@@ -235,6 +240,5 @@ export function buildSkillsCliArgs(source: RemoteSkillSource, provider: AgentPro
 }
 
 export function isSshSkillSource(source: SkillSourceConnectionInput): boolean {
-  const normalized = source.source.trimStart().toLowerCase();
-  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
+  return isSshRemoteUrl(source.source);
 }

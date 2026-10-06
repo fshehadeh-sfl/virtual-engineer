@@ -54,6 +54,7 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
   const lastRestartTokenRef = useRef<number | undefined>(restartToken);
   const restartTokenRef = useRef<number | undefined>(restartToken);
   restartTokenRef.current = restartToken;
+  const clickTimersRef = useRef(new Set<number>());
 
   const reportActive = useCallback((active: boolean) => {
     if (activeRef.current === active) return;
@@ -192,8 +193,23 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
     };
   }, [index, started, steps]);
 
+  useEffect(() => {
+    const timers = clickTimersRef.current;
+    return () => {
+      for (const timer of timers) window.clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
+
   // Advance when the user clicks the real, highlighted element.
   useEffect(() => {
+    const schedule = (fn: () => void, delayMs: number) => {
+      const timer = window.setTimeout(() => {
+        clickTimersRef.current.delete(timer);
+        fn();
+      }, delayMs);
+      clickTimersRef.current.add(timer);
+    };
     if (!started) return;
     const onClick = (event: MouseEvent) => {
       const el = targetElRef.current;
@@ -215,13 +231,13 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
             return;
           }
           attempts += 1;
-          if (attempts < 30) setTimeout(waitForRouteChange, 100);
+          if (attempts < 30) schedule(waitForRouteChange, 100);
         };
-        setTimeout(waitForRouteChange, 0);
+        schedule(waitForRouteChange, 0);
         return;
       }
       if (currentStep?.completion !== "target-disappears") {
-        setTimeout(advance, 0);
+        schedule(advance, 0);
         return;
       }
 
@@ -233,9 +249,9 @@ export function GuidedTour({ tourKey, steps, enabled, restartToken, onActiveChan
           return;
         }
         attempts += 1;
-        if (attempts < 30) setTimeout(waitForCompletion, 100);
+        if (attempts < 30) schedule(waitForCompletion, 100);
       };
-      setTimeout(waitForCompletion, 0);
+      schedule(waitForCompletion, 0);
     };
     document.addEventListener("click", onClick, true);
     return () => document.removeEventListener("click", onClick, true);

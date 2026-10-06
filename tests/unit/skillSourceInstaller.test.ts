@@ -73,6 +73,21 @@ describe("skill source installer", () => {
     });
   });
 
+  it("installs SSH sources without known_hosts using trust-on-first-use", async () => {
+    const execFile = mockExecFile(async () => ({ stdout: "", stderr: "" }));
+    const { installSkillSources } = await import("../../src/workspace/skillSourceInstaller.js");
+    const sources = JSON.stringify([{ source: "git@skills.example.com:org/agent-skills", installAll: true }]);
+
+    await withWorkspace(true, async (dir) => {
+      await installSkillSources(dir, sources, "copilot");
+    });
+
+    const calls = execFileAsyncOf(execFile).mock.calls;
+    expect(calls).toHaveLength(1);
+    const options = calls[0]?.[2] as { env: NodeJS.ProcessEnv };
+    expect(options.env["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=accept-new");
+  });
+
   it("continues past a failing source and still installs the rest", async () => {
     let call = 0;
     const execFile = mockExecFile(async () => {

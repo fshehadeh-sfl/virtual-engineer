@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { promisify } from "node:util";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildSshConnectionArgs,
   buildSkillListArgs,
@@ -11,7 +13,19 @@ import {
   validateSkillSourceSshAuth,
 } from "../../src/admin/skillSourceDiscovery.js";
 
+const TEST_SECRETS_DIR = join(process.cwd(), "secrets");
+const TEST_KNOWN_HOSTS_PATH = join(TEST_SECRETS_DIR, "ve-test-known_hosts");
+
 describe("admin skill source discovery", () => {
+  beforeAll(() => {
+    mkdirSync(TEST_SECRETS_DIR, { recursive: true });
+    writeFileSync(TEST_KNOWN_HOSTS_PATH, "skills.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestHostKey\n", "utf8");
+  });
+
+  afterAll(() => {
+    rmSync(TEST_KNOWN_HOSTS_PATH, { force: true });
+  });
+
   afterEach(() => {
     delete process.env["SKILLS_CLI_PACKAGE"];
     delete process.env["VE_TEST_SECRET"];
@@ -74,10 +88,11 @@ describe("admin skill source discovery", () => {
       sshUser: "git-user",
       sshPort: 29418,
       sshKeyPath: "/tmp/key",
+      sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
     };
 
     expect(resolveSkillSourceUrl(source)).toBe("ssh://git-user@skills.example.com:29418/org/agent-skills");
-    expect(buildSkillListEnv(source)["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
+    expect(buildSkillListEnv(source)["GIT_SSH_COMMAND"]).toBe(`ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='${TEST_KNOWN_HOSTS_PATH}' -p 29418`);
     expect(buildSshConnectionArgs(source)).toContain("git-user@skills.example.com");
   });
 
@@ -93,9 +108,10 @@ describe("admin skill source discovery", () => {
       source: "ssh://skills.example.com/org/agent-skills",
       sshPort: 29418,
       sshKeyPath: "/tmp/key with spaces",
+      sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
     });
 
-    expect(env["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key with spaces' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
+    expect(env["GIT_SSH_COMMAND"]).toBe(`ssh -i '/tmp/key with spaces' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='${TEST_KNOWN_HOSTS_PATH}' -p 29418`);
   });
 
   it("rejects conflicting explicit SSH URL and fallback ports", () => {
@@ -111,9 +127,10 @@ describe("admin skill source discovery", () => {
       source: "ssh://skills.example.com:2222/org/agent-skills",
       sshPort: 2222,
       sshKeyPath: "/tmp/key",
+      sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
     });
 
-    expect(env["GIT_SSH_COMMAND"]).toBe("ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null");
+    expect(env["GIT_SSH_COMMAND"]).toBe(`ssh -i '/tmp/key' -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile='${TEST_KNOWN_HOSTS_PATH}'`);
   });
 
   it("builds SSH env with strict known_hosts checking when configured", () => {
@@ -130,9 +147,24 @@ describe("admin skill source discovery", () => {
     const env = buildSkillListEnv({
       source: "ssh://skills.example.com/org/agent-skills",
       sshPort: 29418,
+      sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
     });
 
-    expect(env["GIT_SSH_COMMAND"]).toBe("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 29418");
+    expect(env["GIT_SSH_COMMAND"]).toBe(`ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile='${TEST_KNOWN_HOSTS_PATH}' -p 29418`);
+  });
+
+  it("recognizes userless SCP-style sources for host verification and connection checks", () => {
+    const source = { source: "skills.example.com:org/agent-skills", sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH, sshPort: 29418 };
+    expect(buildSkillListEnv(source)["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=yes");
+    expect(buildSshConnectionArgs(source)).toContain("skills.example.com");
+    expect(buildSshConnectionArgs({ source: source.source })).toContain("StrictHostKeyChecking=accept-new");
+  });
+
+  it("uses trust-on-first-use for SSH skill sources without known_hosts", () => {
+    expect(buildSkillListEnv({
+      source: "ssh://skills.example.com/org/agent-skills",
+      sshPort: 29418,
+    })["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=accept-new");
   });
 
   it("builds ssh -T connection checks for resolved SSH sources", () => {
@@ -141,7 +173,7 @@ describe("admin skill source discovery", () => {
       sshUser: "git-user",
       sshPort: 29418,
       sshKeyPath: "/tmp/key",
-      sshKnownHostsPath: "/tmp/known_hosts",
+      sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
     })).toEqual([
       "-T",
       "-o", "BatchMode=yes",
@@ -149,7 +181,7 @@ describe("admin skill source discovery", () => {
       "-i", "/tmp/key",
       "-o", "IdentitiesOnly=yes",
       "-o", "StrictHostKeyChecking=yes",
-      "-o", "UserKnownHostsFile=/tmp/known_hosts",
+      "-o", `UserKnownHostsFile=${TEST_KNOWN_HOSTS_PATH}`,
       "-p", "29418",
       "git-user@skills.example.com",
     ]);
@@ -177,8 +209,12 @@ describe("admin skill source discovery", () => {
       expect(buildSkillListEnv({
         source: "ssh://skills.example.com/org/agent-skills",
         sshKeyPath: "/tmp/key",
+        sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
       })["SSH_AUTH_SOCK"]).toBeUndefined();
-      expect(buildSkillListEnv({ source: "git@skills.example.com:org/agent-skills" })["SSH_AUTH_SOCK"]).toBe("/tmp/ve-ssh.sock");
+      expect(buildSkillListEnv({
+        source: "git@skills.example.com:org/agent-skills",
+        sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
+      })["SSH_AUTH_SOCK"]).toBe("/tmp/ve-ssh.sock");
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
       else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
@@ -191,11 +227,25 @@ describe("admin skill source discovery", () => {
     try {
       await expect(validateSkillSourceSshAuth({
         source: "ssh://skills.example.com/org/agent-skills",
+        sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH,
       })).rejects.toThrow("SSH_AUTH_SOCK");
       await expect(validateSkillSourceSshAuth({
         source: "ssh://skills.example.com/org/agent-skills",
         sshKeyPath: "/tmp/virtual-engineer-missing-key",
       })).rejects.toThrow("not readable as a regular file");
+    } finally {
+      if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
+      else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
+    }
+  });
+
+  it("accepts SSH sources without a known_hosts path", async () => {
+    const originalSshAuthSock = process.env["SSH_AUTH_SOCK"];
+    process.env["SSH_AUTH_SOCK"] = "/tmp/ve-test-ssh.sock";
+    try {
+      await expect(validateSkillSourceSshAuth({
+        source: "ssh://skills.example.com/org/agent-skills",
+      })).resolves.toBeUndefined();
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
       else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;
@@ -227,7 +277,7 @@ describe("admin skill source discovery", () => {
 
     try {
       const { validateSkillSourcesConnection: validateConnection } = await import("../../src/admin/skillSourceDiscovery.js");
-      await expect(validateConnection([{ source: "ssh://skills.example.com/org/agent-skills" }]))
+      await expect(validateConnection([{ source: "ssh://skills.example.com/org/agent-skills", sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }]))
         .rejects.toThrow('Skill source #1 "ssh://skills.example.com/org/agent-skills": SSH connection check failed');
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
@@ -253,7 +303,7 @@ describe("admin skill source discovery", () => {
 
     try {
       const { validateSkillSourcesConnection: validateConnection } = await import("../../src/admin/skillSourceDiscovery.js");
-      await expect(validateConnection([{ source: "ssh://g1.sfl.io/sfl/agent-skills", sshPort: 29419 }])).resolves.toBeUndefined();
+      await expect(validateConnection([{ source: "ssh://g1.sfl.io/sfl/agent-skills", sshPort: 29419, sshKnownHostsPath: TEST_KNOWN_HOSTS_PATH }])).resolves.toBeUndefined();
     } finally {
       if (originalSshAuthSock === undefined) delete process.env["SSH_AUTH_SOCK"];
       else process.env["SSH_AUTH_SOCK"] = originalSshAuthSock;

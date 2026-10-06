@@ -14,12 +14,12 @@ describe("agent-worker remote skills", () => {
 
   it("parses explicit and install-all skill sources", () => {
     const parsed = parseRemoteSkillSources(JSON.stringify([
-      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b", "skill-a"] },
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b", "skill-a"], sshKnownHostsPath: "/keys/known_hosts" },
       { source: "example-org/agent-skills", installAll: true },
     ]));
 
     expect(parsed).toEqual([
-      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"] },
+      { source: "ssh://skills.example.com/org/agent-skills", skills: ["skill-a", "skill-b"], sshKnownHostsPath: "/keys/known_hosts" },
       { source: "example-org/agent-skills", skills: [], installAll: true },
     ]);
   });
@@ -186,6 +186,27 @@ describe("agent-worker remote skills", () => {
       if (originalHttpsProxy === undefined) delete process.env["HTTPS_PROXY"];
       else process.env["HTTPS_PROXY"] = originalHttpsProxy;
     }
+  });
+
+  it("uses trust-on-first-use for SSH skill sources without known_hosts", () => {
+    expect(buildSkillSourceSubprocessEnv({
+      source: "ssh://skills.example.com/org/agent-skills",
+      sshPort: 29418,
+    })["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=accept-new");
+  });
+
+  it("detects userless SCP-style SSH skill sources", () => {
+    expect(buildSkillSourceSubprocessEnv({ source: "skills.example.com:org/agent-skills" })["GIT_SSH_COMMAND"])
+      .toContain("StrictHostKeyChecking=accept-new");
+    expect(buildSkillSourceSubprocessEnv({
+      source: "https://user@skills.example.com:8443/org/agent-skills",
+    })["GIT_SSH_COMMAND"]).toBeUndefined();
+  });
+
+  it("parses SSH sources without a known_hosts path", () => {
+    expect(parseRemoteSkillSources(JSON.stringify([
+      { source: "git@skills.example.com:repo", installAll: true },
+    ]))).toEqual([{ source: "git@skills.example.com:repo", skills: [], installAll: true }]);
   });
 
 });

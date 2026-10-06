@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { managedKnownHostsPath } from "../../src/utils/sshHostKeys.js";
 
 // ─── Mock state ───────────────────────────────────────────────────────────────
 
@@ -63,7 +64,13 @@ function sshNdjson(...objects: unknown[]): string {
   ].join("\n");
 }
 
-const SSH_CONFIG = { host: "gerrit.test", port: 29418, user: "ve", keyPath: "/key" };
+const SSH_CONFIG = {
+  host: "gerrit.test",
+  port: 29418,
+  user: "ve",
+  keyPath: "/key",
+  knownHostsPath: "/etc/ssh/known_hosts",
+};
 
 function makeClient(): GerritSshClient {
   return new GerritSshClient(SSH_CONFIG);
@@ -160,11 +167,26 @@ describe("GerritSshClient", () => {
         "-p", "29418",
         "-i", "/key",
         "-o", "IdentitiesOnly=yes",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=/etc/ssh/known_hosts",
         "ve@gerrit.test",
         "gerrit", "ls-projects", "--format", "JSON",
       ]);
+    });
+
+    it("trusts the host key on first use when knownHostsPath is missing", async () => {
+      execFileResults = [{ stdout: "output", stderr: "" }];
+      const client = new GerritSshClient({
+        host: "gerrit.test",
+        port: 29418,
+        user: "ve",
+        keyPath: "/key",
+      });
+
+      await client.query(["ls-projects"]);
+      const args = execFileCalls[0]?.args ?? [];
+      expect(args).toContain("StrictHostKeyChecking=accept-new");
+      expect(args).toContain(`UserKnownHostsFile=${managedKnownHostsPath()}`);
     });
 
     it("uses StrictHostKeyChecking=yes with UserKnownHostsFile when knownHostsPath is set", async () => {

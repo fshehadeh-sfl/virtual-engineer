@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { buildSkillSourceSubprocessEnv, resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
+import { buildSkillSourceSubprocessEnv, isSshSkillSource, resolveSshSkillSourceUrl } from "../workspace/skillSources.js";
+import { isSshRemoteUrl } from "../utils/gitRemoteUrl.js";
+import { sshHostKeyArgs } from "../utils/sshHostKeys.js";
 import { getLogger } from "../logger.js";
 import { readSshFileSecure } from "../utils/sshFilePath.js";
 
@@ -32,11 +34,6 @@ function isSshUrlSource(source: string): boolean {
   return normalizedSourcePrefix(source).startsWith("ssh://");
 }
 
-function isSshSkillSource(source: SkillSourceDiscoveryInput): boolean {
-  const normalized = normalizedSourcePrefix(source.source);
-  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
-}
-
 function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string; port?: number } | undefined {
   const sourceValue = source.source.trimStart();
   if (isSshUrlSource(sourceValue)) {
@@ -48,7 +45,8 @@ function sshConnectionSpec(source: SkillSourceDiscoveryInput): { target: string;
     };
   }
 
-  const scpLike = /^([^@\s]+@[^:\s]+):/.exec(sourceValue);
+  if (!isSshRemoteUrl(sourceValue)) return undefined;
+  const scpLike = /^((?:[^@:/\s]+@)?[^@:/\s]+):/.exec(sourceValue);
   if (!scpLike?.[1]) return undefined;
   return {
     target: scpLike[1],
@@ -78,9 +76,7 @@ export function buildSshConnectionArgs(source: SkillSourceDiscoveryInput): strin
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${Math.ceil(SKILL_SSH_CONNECT_TIMEOUT_MS / 1000)}`,
     ...(source.sshKeyPath ? ["-i", source.sshKeyPath, "-o", "IdentitiesOnly=yes"] : []),
-    ...(source.sshKnownHostsPath
-      ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${source.sshKnownHostsPath}`]
-      : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]),
+    ...sshHostKeyArgs(source.sshKnownHostsPath),
     ...(spec.port !== undefined ? ["-p", String(spec.port)] : []),
     spec.target,
   ];

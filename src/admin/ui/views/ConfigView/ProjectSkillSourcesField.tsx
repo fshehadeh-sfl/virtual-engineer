@@ -29,6 +29,13 @@ export interface SkillSourceRow {
 
 const MAX_TCP_PORT = 65_535;
 
+function isSshRemoteUrl(value: string): boolean {
+  const remote = value.trimStart();
+  if (/^ssh:\/\//i.test(remote)) return true;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(remote)) return false;
+  return /^(?:[^@:/\s]+@)?[^@:/\s]+:.+/.test(remote);
+}
+
 function newSkillSourceRowId(): string {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return Array.from(
@@ -55,20 +62,6 @@ export function skillSourceToRow(source: SkillSource): SkillSourceRow {
     listing: false,
     listError: null,
   };
-}
-
-export function preloadedProjectSkillSourceRow(): SkillSourceRow {
-  return skillSourceToRow({
-    source: "ssh://g1.sfl.io/sfl/agent-skills",
-    skills: [],
-    installAll: true,
-    sshPort: 29419,
-  });
-}
-
-function isSshSkillSource(source: string): boolean {
-  const normalized = source.trimStart().toLowerCase();
-  return normalized.startsWith("ssh://") || normalized.startsWith("git@");
 }
 
 function rowToSkillSource(row: SkillSourceRow): SkillSource | null {
@@ -173,7 +166,7 @@ export function ProjectSkillSourcesField({
         {rows.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {rows.map((row) => {
-              const showSshFields = isSshSkillSource(row.source);
+              const showSshFields = isSshRemoteUrl(row.source);
               return (
                 <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10, border: "1px solid var(--border)", borderRadius: 10 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.5fr) minmax(0, 1fr) auto auto auto", gap: 8, alignItems: "end" }}>
@@ -226,7 +219,7 @@ export function ProjectSkillSourcesField({
                       </label>
                       <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "11px", color: "var(--text-faint)" }}>
                         SSH known_hosts path
-                        <FieldInput value={row.sshKnownHostsPath} placeholder="/home/ve/.ssh/known_hosts" onChange={(e) => updateRow(row.id, { sshKnownHostsPath: e.target.value })} />
+                        <FieldInput value={row.sshKnownHostsPath} placeholder="optional — trust on first use" onChange={(e) => updateRow(row.id, { sshKnownHostsPath: e.target.value })} />
                       </label>
                     </div>
                   )}

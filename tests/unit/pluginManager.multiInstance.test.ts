@@ -159,6 +159,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
           sshPort: 29418,
           sshUser: "ve",
           sshKeyPath: "/keys/a",
+          sshKnownHostsPath: "/keys/known_hosts_a",
         }),
       }),
       makeIntegration({
@@ -169,6 +170,7 @@ describe("PluginManager — Phase 4 multi-instance", () => {
           sshPort: 29418,
           sshUser: "ve",
           sshKeyPath: "/keys/b",
+          sshKnownHostsPath: "/keys/known_hosts_b",
         }),
       }),
     ]);

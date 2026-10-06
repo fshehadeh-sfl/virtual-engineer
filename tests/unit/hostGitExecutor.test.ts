@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:f
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { HostGitExecutor, type GitRunner } from "../../src/workspace/hostGitExecutor.js";
+import { managedKnownHostsPath } from "../../src/utils/sshHostKeys.js";
 
 function recordingRunner(responses: Record<string, string> = {}): {
   git: GitRunner;
@@ -204,6 +205,29 @@ describe("HostGitExecutor", () => {
       "ssh -i '/keys/$(touch /tmp/pwned)' -o IdentitiesOnly=yes "
       + "-o StrictHostKeyChecking=yes -o UserKnownHostsFile='/known hosts/it'\"'\"'s-safe'",
     );
+  });
+
+  it("trusts the host key on first use for SSH operations without a known_hosts path", async () => {
+    const { git, calls } = recordingRunner();
+    const exec = new HostGitExecutor({ baseDir: "/tmp", git });
+
+    await exec.cloneRepo("/tmp/ws", "ssh://git@example.com/repo", "main", ".", "/keys/id_ed25519", undefined);
+    expect(calls[0]?.env?.["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=accept-new");
+    expect(calls[0]?.env?.["GIT_SSH_COMMAND"]).toContain(`UserKnownHostsFile='${managedKnownHostsPath()}'`);
+  });
+
+  it("does not treat credentialed HTTPS URLs as SSH remotes", async () => {
+    const { git, calls } = recordingRunner();
+    const exec = new HostGitExecutor({ baseDir: "/tmp", git });
+    await exec.cloneRepo("/tmp/ws", "https://user@host.example:8443/repo.git", "main");
+    expect(calls[0]?.env?.["GIT_SSH_COMMAND"]).toBeUndefined();
+  });
+
+  it("applies host-key policy to userless SCP-style remotes", async () => {
+    const { git, calls } = recordingRunner();
+    const exec = new HostGitExecutor({ baseDir: "/tmp", git });
+    await exec.cloneRepo("/tmp/ws", "host.example:team/repo.git", "main");
+    expect(calls[0]?.env?.["GIT_SSH_COMMAND"]).toContain("StrictHostKeyChecking=accept-new");
   });
 
   it.each(["../outside", "/absolute/path", "libs/../../outside"])(

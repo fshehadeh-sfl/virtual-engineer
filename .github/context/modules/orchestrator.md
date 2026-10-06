@@ -80,7 +80,7 @@ Important behaviors:
 - every workspace attempt receives a unique OpenShell sandbox name (`ve-<taskId>-<8 hex>`) and host scratch directory; stale cleanup from an earlier attempt cannot collide with a retry
 - The DB-backed Agent Timeout setting (seeded by `AGENT_TIMEOUT_MS`) is also passed to `openshell sandbox exec --timeout`; on expiry it aborts the local OpenShell CLI process group and waits for its termination before sandbox/workspace cleanup begins
 - **review-system identity is per-push-target**: each `VcsConnector` implementation declares `reviewSystemLabel` (`"gerrit"`, `"gitlab"`, or `"github"`) and `buildPushSpec(baseBranch, taskId)` — mixed Gerrit+GitLab+GitHub projects are fully supported; the orchestrator never inspects integration type strings
-- **SSH host identity is per-push-target**: workspace preparation enriches every target with its connector's `sshKnownHostsPath`, so mixed-host projects verify each clone against the correct host-key file instead of reusing the root repository's file
+- **SSH host identity is per-push-target**: workspace preparation enriches every target with its connector's `sshKnownHostsPath`, so mixed-host projects verify each clone against the correct host-key file instead of reusing the root repository's file; targets without one use trust-on-first-use against the VE-managed known_hosts file
 - **ticket lifecycle transitions** (`transitionToInProgress`, `transitionToInReview`) are delegated to the `TicketConnector` implementation rather than driven from `OrchestratorConfig` status ID fields
 
 ## `pollingLoop.ts`

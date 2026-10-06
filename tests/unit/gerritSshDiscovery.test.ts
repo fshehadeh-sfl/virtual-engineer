@@ -36,6 +36,7 @@ const SSH_CONFIG = {
   user: "ve-bot",
   port: 29418,
   keyPath: "/tmp/gerrit_id_ed25519",
+  knownHostsPath: "/tmp/known_hosts",
 };
 
 describe("listRepositoriesViaSsh", () => {

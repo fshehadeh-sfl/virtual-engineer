@@ -89,6 +89,7 @@ describe("Plugin Registry", () => {
         sshPort: 29418,
         sshUser: "admin",
         sshKeyPath: "/path/key",
+        sshKnownHostsPath: "/path/known_hosts",
       });
       expect(result.success).toBe(true);
     });
@@ -99,6 +100,7 @@ describe("Plugin Registry", () => {
         sshPort: 29418,
         sshUser: "admin",
         sshKeyPath: "/path/key",
+        sshKnownHostsPath: "/path/known_hosts",
         baseUrl: "http://gerrit:8080",
         httpUsername: "admin",
         httpPassword: "pass",

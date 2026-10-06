@@ -10,6 +10,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { ReviewComment } from "../interfaces.js";
+import { sshHostKeyArgs } from "../utils/sshHostKeys.js";
 import { toRejectionError } from "../utils/rejection.js";
 import { getLogger } from "../logger.js";
 
@@ -147,16 +148,14 @@ export interface GerritSshConfig {
 
 /**
  * Build the SSH host-key verification option flags for a given known_hosts path.
- * Returns strict-checking args when a path is provided; falls back to accepting
- * any fingerprint (with an explicit no-op known_hosts file) when absent.
+ * Enforces a configured file strictly; otherwise trusts the host key on first use
+ * via the orchestrator-managed known_hosts file.
  *
  * Export: consumed by GerritStreamEventsManager, GerritVcsConnector, and
  * GerritSshReviewProvider so all SSH callers share a single source of truth.
  */
 export function buildSshHostKeyOptions(knownHostsPath?: string): string[] {
-  return knownHostsPath
-    ? ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${knownHostsPath}`]
-    : ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"];
+  return sshHostKeyArgs(knownHostsPath);
 }
 
 // ─── Client ───────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ All variables are optional. Only system/infra settings remain in the environment
 |---|---|---|
 | `NODE_ENV` | `development` | `development` \| `production` \| `test`. `test` silences the logger by default. |
 | `LOG_LEVEL` | `info` | Pino level. |
-| `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. |
+| `DATABASE_PATH` | `./data/virtual-engineer.db` | SQLite file path. Its directory also holds `ssh/known_hosts`, the VE-managed trust-on-first-use file used for SSH hosts without a configured known_hosts path. |
 
 ### Admin server
 

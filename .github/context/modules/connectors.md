@@ -12,7 +12,7 @@ Provides default `transitionToInProgress` / `transitionToInReview` implementatio
 
 ### `GerritSshClient` — [src/connectors/gerritSshClient.ts](../../../src/connectors/gerritSshClient.ts)
 
-Shared SSH transport and Gerrit protocol helper. Encapsulates `ssh gerrit …` execution, NDJSON parsing, and `buildSshHostKeyOptions()` so that `GerritConnector`, `GerritSshReviewProvider`, `GerritVcsConnector`, and `GerritStreamEventsManager` share a single SSH client rather than duplicating implementation. Top-level Jenkins lifecycle notices and vote-only messages are filtered; failed/aborted/unstable builds are retained with `ci-failure-*` IDs for the orchestrator's project-level gate. When resolving inline feedback, the client best-effort reads Gerrit's anonymous comments endpoint and sends `in_reply_to` through `gerrit review --json`, falling back to a fresh resolved comment when no UUID is available.
+Shared SSH transport and Gerrit protocol helper. Encapsulates `ssh gerrit …` execution, NDJSON parsing, and `buildSshHostKeyOptions()` so that `GerritConnector`, `GerritSshReviewProvider`, `GerritVcsConnector`, and `GerritStreamEventsManager` share a single SSH client rather than duplicating implementation. `buildSshHostKeyOptions()` (via `src/utils/sshHostKeys.ts`) uses strict host-key verification when `knownHostsPath` is configured, otherwise trust-on-first-use (`StrictHostKeyChecking=accept-new`) against the VE-managed `<dirname(DATABASE_PATH)>/ssh/known_hosts`; it never disables verification or uses `/dev/null`. Top-level Jenkins lifecycle notices and vote-only messages are filtered; failed/aborted/unstable builds are retained with `ci-failure-*` IDs for the orchestrator's project-level gate. When resolving inline feedback, the client best-effort reads Gerrit's anonymous comments endpoint and sends `in_reply_to` through `gerrit review --json`, falling back to a fresh resolved comment when no UUID is available.
 
 ### `GitLabHttpClient` — [src/connectors/gitlabHttpClient.ts](../../../src/connectors/gitlabHttpClient.ts)
 
@@ -81,7 +81,7 @@ Methods used by the orchestrator:
 
 - SSH-only connector for review feedback and repository discovery.
 - Delegates SSH transport to `GerritSshClient`.
-- Uses `ssh gerrit query`, `ssh gerrit review`, and `ssh gerrit ls-projects` with `sshHost`, `sshPort`, `sshUser`, and `sshKeyPath`.
+- Uses `ssh gerrit query`, `ssh gerrit review`, and `ssh gerrit ls-projects` with `sshHost`, `sshPort`, `sshUser`, and `sshKeyPath`; `knownHostsPath` is optional (strict when set, trust-on-first-use otherwise).
 - `baseUrl` is optional and used only to build clickable Gerrit web links; review operations no longer depend on REST credentials.
 - `listRepositoriesViaSsh()` is the shared SSH discovery helper used by integration testing, admin discovery, and runtime connection checks.
 - `listBranchesViaSsh(ssh, repoKey)` runs `git ls-remote --heads ssh://…/<repoKey>` (with `GIT_SSH_COMMAND` carrying the key + host-key options) and parses `refs/heads/*` into branch names; surfaced via `GerritSshConnector.listBranches()` and the descriptor `discoverBranches` hook.

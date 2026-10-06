@@ -2,6 +2,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectFormModal } from "../../../src/admin/ui/views/ConfigView/ProjectFormModal.js";
+import { buildSkillSourcesPayload, emptySkillSourceRow } from "../../../src/admin/ui/views/ConfigView/ProjectSkillSourcesField.js";
 import type { ApiAgent, ApiIntegration } from "../../../src/admin/ui/types.js";
 
 const codingAgent: ApiAgent = {
@@ -46,6 +47,14 @@ describe("ProjectFormModal repository integration resolution", () => {
     vi.restoreAllMocks();
   });
 
+  it("submits SSH skill sources with or without an optional known_hosts path", () => {
+    const row = { ...emptySkillSourceRow(), source: "skills.example.com:team/repo", installAll: true };
+    expect(buildSkillSourcesPayload([row])).toEqual([{ source: row.source, skills: [], installAll: true }]);
+    expect(buildSkillSourcesPayload([{ ...row, sshKnownHostsPath: "/keys/known_hosts" }])).toEqual([{
+      source: row.source, skills: [], installAll: true, sshKnownHostsPath: "/keys/known_hosts",
+    }]);
+  });
+
   it("renders the add-project form when crypto.randomUUID is unavailable", () => {
     const originalCrypto = globalThis.crypto;
     vi.stubGlobal("crypto", {
@@ -64,6 +73,7 @@ describe("ProjectFormModal repository integration resolution", () => {
       );
 
       expect(screen.getByText("Additional Skills")).toBeTruthy();
+      expect(screen.queryByDisplayValue("ssh://g1.sfl.io/sfl/agent-skills")).toBeNull();
     } finally {
       vi.stubGlobal("crypto", originalCrypto);
     }

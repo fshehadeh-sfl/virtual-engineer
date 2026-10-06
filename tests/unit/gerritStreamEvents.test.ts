@@ -48,6 +48,7 @@ function makeIntegration(id: string, overrides: Partial<Integration> = {}): Inte
       sshHost: "gerrit.example.com",
       sshPort: 29418,
       sshUser: VE_SSH_USER,
+      sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
       // Resolved key path injected by preprocessConfig (generated-key mode).
       _resolvedSshKeyPath: "/tmp/id_rsa",
     }),
@@ -361,6 +362,34 @@ describe("GerritStreamEventsManager", () => {
     );
   });
 
+  it("starts integrations without known_hosts using trust-on-first-use", async () => {
+    const child = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([child]);
+    const integration = makeIntegration("gerrit-a", {
+      configJson: JSON.stringify({ sshHost: "gerrit.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+    });
+
+    await manager.reconcile([integration]);
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      "ssh",
+      expect.arrayContaining(["StrictHostKeyChecking=accept-new"]),
+      expect.anything(),
+    );
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "connecting" }));
+  });
+
+  it("records a synchronous spawn failure without blocking other integrations", async () => {
+    const child = new FakeChildProcess();
+    const { manager, spawnProcess } = createManager([child]);
+    spawnProcess.mockImplementationOnce(() => { throw new Error("spawn exploded"); });
+
+    await expect(manager.reconcile([makeIntegration("gerrit-a"), makeIntegration("gerrit-b")])).resolves.toBeUndefined();
+
+    expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ state: "error", lastError: "spawn exploded" }));
+    expect(manager.getStatus("gerrit-b")).toEqual(expect.objectContaining({ state: "connecting" }));
+  });
+
   it("starts and stops one listener per active Gerrit integration", async () => {
     const childA = new FakeChildProcess();
     const childB = new FakeChildProcess();
@@ -438,7 +467,12 @@ describe("GerritStreamEventsManager", () => {
     expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({ reconnectCount: 1 }));
 
     await manager.reconcile([makeIntegration("gerrit-a", {
-      configJson: JSON.stringify({ sshHost: "other.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+      configJson: JSON.stringify({
+        sshHost: "other.example.com",
+        sshPort: 29418,
+        sshUser: VE_SSH_USER,
+        sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
+      }),
     })]);
 
     expect(manager.getStatus("gerrit-a")).toEqual(expect.objectContaining({
@@ -869,7 +903,12 @@ describe("GerritStreamEventsManager", () => {
       await flushAsyncWork();
 
       await manager.reconcile([makeIntegration("gerrit-a", {
-        configJson: JSON.stringify({ sshHost: "other.example.com", sshPort: 29418, sshUser: VE_SSH_USER }),
+        configJson: JSON.stringify({
+          sshHost: "other.example.com",
+          sshPort: 29418,
+          sshUser: VE_SSH_USER,
+          sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
+        }),
       })]);
       second.stdout.write("x");
       await flushAsyncWork();

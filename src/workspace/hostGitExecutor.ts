@@ -14,6 +14,8 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "fs/promises";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { trustedGitArgs, trustedGitEnv } from "../utils/gitExec.js";
+import { isSshRemoteUrl } from "../utils/gitRemoteUrl.js";
+import { resolveSshHostKeyPolicy } from "../utils/sshHostKeys.js";
 
 /** Runs a git argv in `cwd` with an optional explicit env; resolves stdout, rejects on non-zero exit. */
 export type GitRunner = (args: string[], cwd: string, env?: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<string>;
@@ -42,6 +44,7 @@ const defaultGitRunner: GitRunner = (args, cwd, env, signal) =>
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
+
 
 function resolveWorkspacePath(dir: string, subPath: string): string {
   if (isAbsolute(subPath)) {
@@ -110,20 +113,21 @@ export function credentialFreeUrl(repoUrl: string): string {
 
 /**
  * Build a process env that injects GIT_SSH_COMMAND for a given key + known-hosts policy.
- * When no knownHostsPath is provided SSH falls back to StrictHostKeyChecking=no so that
- * first-time connections (host key not yet in system known_hosts) do not fail.
+ * A configured known_hosts path is enforced strictly; otherwise the host key is
+ * trusted on first use via the orchestrator-managed known_hosts file.
  * Setting GIT_SSH_COMMAND is harmless for HTTPS URLs — git ignores it.
  */
 function buildSshGitEnv(
+  remoteUrl: string,
   sshKeyPath?: string | null,
   sshKnownHostsPath?: string | null,
 ): NodeJS.ProcessEnv {
+  if (!isSshRemoteUrl(remoteUrl)) return process.env;
+  const hostKeys = resolveSshHostKeyPolicy(sshKnownHostsPath);
   const keyPart = sshKeyPath
     ? `-i ${shellQuote(sshKeyPath)} -o IdentitiesOnly=yes`
     : "";
-  const hostKeyPart = sshKnownHostsPath
-    ? `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${shellQuote(sshKnownHostsPath)}`
-    : "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null";
+  const hostKeyPart = `-o StrictHostKeyChecking=${hostKeys.strictHostKeyChecking} -o UserKnownHostsFile=${shellQuote(hostKeys.knownHostsPath)}`;
   const sshCmd = ["ssh", keyPart, hostKeyPart].filter(Boolean).join(" ");
   return { ...process.env, GIT_SSH_COMMAND: sshCmd };
 }
@@ -252,7 +256,7 @@ export class HostGitExecutor {
     signal?: AbortSignal,
   ): Promise<void> {
     const cloneDir = resolveWorkspacePath(dir, subPath);
-    const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
+    const env = buildSshGitEnv(repoUrl, sshKeyPath, sshKnownHostsPath);
     let lastError: unknown;
     let cloneSucceeded = false;
 
@@ -346,7 +350,7 @@ export class HostGitExecutor {
     signal?: AbortSignal,
   ): Promise<void> {
     const cwd = resolveWorkspacePath(dir, subPath);
-    const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
+    const env = buildSshGitEnv(remoteUrl, sshKeyPath, sshKnownHostsPath);
     await this.git(["fetch", remoteUrl, ref], cwd, env, signal);
     await this.git(["checkout", "FETCH_HEAD"], cwd, undefined, signal);
   }
@@ -362,7 +366,7 @@ export class HostGitExecutor {
     signal?: AbortSignal,
   ): Promise<void> {
     const cwd = resolveWorkspacePath(dir, subPath);
-    const env = buildSshGitEnv(sshKeyPath, sshKnownHostsPath);
+    const env = buildSshGitEnv(remoteUrl, sshKeyPath, sshKnownHostsPath);
     await this.git(["fetch", remoteUrl, ref], cwd, env, signal);
     await this.git(["cherry-pick", "FETCH_HEAD"], cwd, undefined, signal);
   }

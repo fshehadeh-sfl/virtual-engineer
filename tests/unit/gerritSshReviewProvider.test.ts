@@ -83,6 +83,7 @@ function makeProvider(overrides: Partial<GerritSshReviewProviderConfig> = {}): G
     sshHost: SSH_HOST,
     sshPort: SSH_PORT,
     sshUser: SSH_USER,
+    sshKnownHostsPath: "/app/secrets/gerrit_known_hosts",
     reviewerAccountId: REVIEWER_ACCOUNT_ID,
     workspaceBaseDir: "/tmp/test-diffs",
     ...overrides,

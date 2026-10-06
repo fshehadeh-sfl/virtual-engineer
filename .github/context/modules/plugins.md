@@ -32,6 +32,8 @@ src/plugins/
 
 Provider ids are `github | gitlab | gerrit | redmine | copilot | claude | aider | goose | codex | gemini | opencode | cursor` (`PROVIDER_IDS` in `src/interfaces.ts`). The former split descriptors (`github-issue` + `github-pull-request`, `gitlab-issue` + `gitlab-merge-request`) were merged into single `github` / `gitlab` descriptors. `PLUGIN_CATEGORIES` / `category` no longer exist.
 
+Gerrit's descriptor exposes `sshKnownHostsPath` as an optional advanced field. When set, the connection test rejects unreadable files and SSH uses strict host-key checking; when empty, SSH uses trust-on-first-use (`StrictHostKeyChecking=accept-new`) against the VE-managed `<dirname(DATABASE_PATH)>/ssh/known_hosts` (first key recorded, later changes rejected). Host-key verification is never disabled. A stream-events listener start failure reports `state: "error"` without blocking startup or other Gerrit integrations.
+
 A descriptor (`ProviderDescriptor`) provides:
 
 - `provider` (the `ProviderId`) and `name`

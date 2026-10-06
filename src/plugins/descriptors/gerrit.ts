@@ -68,7 +68,9 @@ function buildSshArgs(cfg: Record<string, unknown>): {
     port: (cfg["sshPort"] as number | undefined) ?? GERRIT_SSH_PORT_DEFAULT,
     keyPath,
     agentPubKeyPath: cfg[SSH_AGENT_PUBKEY_PATH] as string | undefined,
-    knownHostsPath: (cfg["sshKnownHostsPath"] as string | undefined) ?? undefined,
+    knownHostsPath: typeof cfg["sshKnownHostsPath"] === "string" && cfg["sshKnownHostsPath"].trim() !== ""
+      ? cfg["sshKnownHostsPath"].trim()
+      : undefined,
   };
 }
 
@@ -300,4 +302,3 @@ export const gerritDescriptor: ProviderDescriptor = {
   /** SSH key pair generation — called by the admin API endpoint. */
   generateSshKeyPair: generateGerritSshKeyPair,
 };
-
