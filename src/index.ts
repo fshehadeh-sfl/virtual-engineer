@@ -197,7 +197,7 @@ async function main(): Promise<void> {
     async triggerReview(
       integrationId: string,
       changeId: string,
-      options?: { triggerCause?: import("./interfaces.js").ReviewTriggerCause },
+      options?: { triggerCause?: import("./interfaces.js").ReviewTriggerCause; projectId?: string },
     ): Promise<void> {
       await reviewTriggerHolder.current?.triggerReviewForChange(integrationId, changeId, options);
     },

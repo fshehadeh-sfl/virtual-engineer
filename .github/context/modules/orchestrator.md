@@ -99,9 +99,12 @@ Every tick (`POLLING_INTERVAL_MS`, exponential backoff on repeated failures) run
 ### `pollReviewProjects()` (project mode + review trigger only)
 
 - iterates enabled **review** projects and reads their review config
-- skips `automatic` projects during assignment discovery so saving a project does not backfill already-open changes; those projects rely on revision webhooks/streams and provider-native assignment
+- for `automatic` projects with revision polling support (GitHub), stores a durable discovery watermark (initialized to the activation time) and polls PRs created or updated after it, even when VE is not yet requested; existing open PRs are not backfilled on activation or upgrade
+- for `automatic` projects without revision polling support, continues to rely on revision webhooks/streams and provider-native assignment
 - skips integrations whose descriptor declares `streamEvents` (e.g. Gerrit — those receive review assignments via the persistent SSH stream instead)
-- calls the code_review connector's `getOpenReviewAssignments(repos)` for `manual` projects and fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId)`) for each new discovery
+- calls the code_review connector's `getOpenReviewAssignments(repos)` for `manual` projects, or `getOpenReviewChanges(repos, since)` for supported `automatic` projects, then fires the `ReviewAssignmentTrigger` (`triggerReview(integrationId, changeId, { triggerCause, projectId })`) with the corresponding backfill/revision cause; `projectId` scopes `startReviewTask` to the polled project so one binding never starts reviews for another binding on the same repository
+- manual trigger cooldowns and automatic revision state are keyed by project and change
+- automatic polling triggers each head SHA once (state forgotten after an hour unseen), awaits the dispatches, and then compare-and-sets the watermark to the newest discovered update minus one second; a rejected trigger keeps the watermark before that change so the next tick retries it, and an incomplete connector scan does not advance the watermark
 - wired from `src/index.ts` via `setReviewTrigger()`; a no-op when no trigger is set
 
 ### `pollInReviewTasks()` (always on)

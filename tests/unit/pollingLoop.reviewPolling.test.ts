@@ -304,7 +304,10 @@ describe("PollingLoop — pollReviewProjects", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(discoveryConnector.getOpenReviewAssignments).toHaveBeenCalledWith(["octocat/hello-world"]);
-    expect(trigger.triggerReview).toHaveBeenCalledWith("int-gh-1", "octocat/hello-world#42", { triggerCause: "backfill" });
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-gh-1", "octocat/hello-world#42", {
+      triggerCause: "backfill",
+      projectId: project.id,
+    });
   });
 
   it("does not backfill open changes for automatic review projects", async () => {
@@ -338,6 +341,193 @@ describe("PollingLoop — pollReviewProjects", () => {
 
     expect(discoveryConnector.getOpenReviewAssignments).not.toHaveBeenCalled();
     expect(trigger.triggerReview).not.toHaveBeenCalled();
+  });
+
+  function automaticStore(project: ProjectRecord, since = new Date("2026-10-06T14:00:00Z")) {
+    return {
+      listProjects: vi.fn(async () => [project]),
+      getProjectTicketSource: vi.fn(async () => null),
+      getProjectReviewConfig: vi.fn(async () => ({
+        integrationId: "int-auto", repos: ["octocat/repo"], assignmentMode: "automatic" as const,
+      })),
+      initializeAutomaticReviewPollingSince: vi.fn(async () => since),
+      advanceAutomaticReviewPollingSince: vi.fn(async () => true),
+    };
+  }
+
+  function change(number: number, revision: string, updatedAt: string): ReviewAssignmentDiscovery {
+    return {
+      changeId: `octocat/repo#${number}`,
+      project: "octocat/repo",
+      revision,
+      updatedAt: new Date(updatedAt),
+    };
+  }
+
+  it("discovers new or updated PRs for automatic projects without requiring reviewer assignment", async () => {
+    const project = makeProject({ id: "rp-auto", type: "review" });
+    const since = new Date("2026-10-06T14:00:00Z");
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      getOpenReviewChanges: vi.fn().mockResolvedValue({
+        complete: true,
+        changes: [
+          change(43, "sha-43", "2026-10-06T14:05:00Z"),
+          change(44, "sha-44", "2026-10-06T14:03:00Z"),
+        ],
+      }),
+    };
+    const projectStore = automaticStore(project, since);
+    const pluginManager = { getConnectorForCapability: vi.fn(() => discoveryConnector) };
+    const trigger = makeReviewTrigger();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(),
+      makeStore(),
+      { projectStore: projectStore as never, pluginManager: pluginManager as never, reviewTrigger: trigger },
+    );
+
+    await loop.pollReviewProjects();
+
+    expect(projectStore.initializeAutomaticReviewPollingSince).toHaveBeenCalledWith(project.id);
+    expect(discoveryConnector.getOpenReviewAssignments).not.toHaveBeenCalled();
+    expect(discoveryConnector.getOpenReviewChanges).toHaveBeenCalledWith(["octocat/repo"], since);
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-auto", "octocat/repo#43", {
+      triggerCause: "revision",
+      projectId: project.id,
+    });
+    expect(projectStore.advanceAutomaticReviewPollingSince).toHaveBeenCalledWith(
+      project.id, since, new Date("2026-10-06T14:04:59Z"),
+    );
+  });
+
+  it("checks each automatic PR revision once until its head changes", async () => {
+    const project = makeProject({ id: "rp-auto", type: "review" });
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      getOpenReviewChanges: vi.fn()
+        .mockResolvedValueOnce({ complete: true, changes: [change(43, "sha-1", "2026-10-06T14:01:00Z")] })
+        .mockResolvedValueOnce({ complete: true, changes: [change(43, "sha-1", "2026-10-06T14:20:00Z")] })
+        .mockResolvedValueOnce({ complete: true, changes: [change(43, "sha-2", "2026-10-06T14:30:00Z")] }),
+    };
+    const trigger = makeReviewTrigger();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(), makeStore(),
+      { projectStore: automaticStore(project) as never, pluginManager: { getConnectorForCapability: () => discoveryConnector } as never, reviewTrigger: trigger },
+    );
+    const clock = vi.spyOn(Date, "now");
+    clock.mockReturnValue(1_000);
+    await loop.pollReviewProjects();
+    clock.mockReturnValue(1_000 + 11 * 60_000);
+    await loop.pollReviewProjects();
+    expect(trigger.triggerReview).toHaveBeenCalledTimes(1);
+
+    clock.mockReturnValue(1_000 + 12 * 60_000);
+    await loop.pollReviewProjects();
+    expect(trigger.triggerReview).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries an automatic review when dispatch fails and keeps it inside the watermark", async () => {
+    const project = makeProject({ id: "rp-auto", type: "review" });
+    const since = new Date("2026-10-06T14:00:00Z");
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      getOpenReviewChanges: vi.fn().mockResolvedValue({
+        complete: true,
+        changes: [
+          change(44, "sha-44", "2026-10-06T14:09:00Z"),
+          change(43, "sha-43", "2026-10-06T14:02:00Z"),
+        ],
+      }),
+    };
+    const projectStore = automaticStore(project, since);
+    const trigger = makeReviewTrigger();
+    vi.mocked(trigger.triggerReview).mockImplementation(async (_integrationId, changeId) => {
+      if (changeId === "octocat/repo#43" && vi.mocked(trigger.triggerReview).mock.calls.length <= 2) {
+        throw new Error("transient failure");
+      }
+    });
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(), makeStore(),
+      { projectStore: projectStore as never, pluginManager: { getConnectorForCapability: () => discoveryConnector } as never, reviewTrigger: trigger },
+    );
+
+    await loop.pollReviewProjects();
+    expect(projectStore.advanceAutomaticReviewPollingSince).toHaveBeenCalledWith(
+      project.id, since, new Date("2026-10-06T14:01:59Z"),
+    );
+    await loop.pollReviewProjects();
+
+    expect(trigger.triggerReview).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(trigger.triggerReview).mock.calls.map((call) => call[1])).toEqual([
+      "octocat/repo#44", "octocat/repo#43", "octocat/repo#43",
+    ]);
+  });
+
+  it("does not advance the watermark after an incomplete discovery scan", async () => {
+    const project = makeProject({ id: "rp-auto", type: "review" });
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([]),
+      getOpenReviewChanges: vi.fn().mockResolvedValue({
+        complete: false,
+        changes: [change(43, "sha-43", "2026-10-06T14:02:00Z")],
+      }),
+    };
+    const projectStore = automaticStore(project);
+    const trigger = makeReviewTrigger();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(), makeStore(),
+      { projectStore: projectStore as never, pluginManager: { getConnectorForCapability: () => discoveryConnector } as never, reviewTrigger: trigger },
+    );
+
+    await loop.pollReviewProjects();
+
+    expect(trigger.triggerReview).toHaveBeenCalledTimes(1);
+    expect(projectStore.advanceAutomaticReviewPollingSince).not.toHaveBeenCalled();
+  });
+
+  it("scopes review trigger state to each project sharing a repository", async () => {
+    const manual = makeProject({ id: "rp-manual", type: "review" });
+    const automatic = makeProject({ id: "rp-auto", type: "review" });
+    const discoveryConnector: ReviewDiscoveryConnector = {
+      getOpenReviewAssignments: vi.fn().mockResolvedValue([
+        { changeId: "octocat/repo#43", project: "octocat/repo" },
+      ]),
+      getOpenReviewChanges: vi.fn().mockResolvedValue({
+        complete: true,
+        changes: [change(43, "sha-43", "2026-10-06T14:02:00Z")],
+      }),
+    };
+    const projectStore = {
+      ...automaticStore(automatic),
+      listProjects: vi.fn(async () => [manual, automatic]),
+      getProjectReviewConfig: vi.fn(async (projectId: string) => ({
+        integrationId: "int-shared",
+        repos: ["octocat/repo"],
+        assignmentMode: projectId === automatic.id ? "automatic" as const : "manual" as const,
+      })),
+    };
+    const trigger = makeReviewTrigger();
+    const loop = new PollingLoop(
+      { ticketIntervalMs: 30_000, maxRetryAttempts: 5 },
+      makeOrchestrator(), makeStore(),
+      { projectStore: projectStore as never, pluginManager: { getConnectorForCapability: () => discoveryConnector } as never, reviewTrigger: trigger },
+    );
+
+    await loop.pollReviewProjects();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-shared", "octocat/repo#43", {
+      triggerCause: "backfill",
+      projectId: manual.id,
+    });
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-shared", "octocat/repo#43", {
+      triggerCause: "revision",
+      projectId: automatic.id,
+    });
   });
 
   it("is a no-op when reviewTrigger is not set", async () => {
@@ -525,7 +715,7 @@ describe("PollingLoop — pollReviewProjects", () => {
     await loop.pollReviewProjects();
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(trigger.triggerReview).toHaveBeenCalledWith("int-1", "octocat/repo#1", { triggerCause: "backfill" });
+    expect(trigger.triggerReview).toHaveBeenCalledWith("int-1", "octocat/repo#1", { triggerCause: "backfill", projectId: project.id });
   });
 
   it("rechecks watched polling review tasks when VE remains assigned", async () => {
@@ -813,7 +1003,7 @@ describe("PollingLoop — pollReviewProjects", () => {
     const cooldowns = (loop as unknown as {
       reviewTriggerCooldowns: Map<string, number>;
     }).reviewTriggerCooldowns;
-    expect(cooldowns.has("int-prune:octocat/repo#47")).toBe(true);
+    expect(cooldowns.has(`${project.id}:octocat/repo#47`)).toBe(true);
     expect(cooldowns.size).toBe(1);
   });
 });

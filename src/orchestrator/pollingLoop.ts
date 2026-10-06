@@ -17,6 +17,10 @@ import { makeTicketId } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 
 const log = getLogger("polling-loop");
+/** Forget an automatic review revision after it has not been rediscovered for this long. */
+const AUTOMATIC_REVIEW_REVISION_TTL_MS = 60 * 60 * 1000;
+/** Re-scan the last second before the watermark to tolerate same-second provider updates. */
+const AUTOMATIC_REVIEW_WATERMARK_OVERLAP_MS = 1000;
 
 export interface PollingConfig {
   ticketIntervalMs: number;
@@ -31,6 +35,8 @@ export interface ProjectAwareStore {
   listProjects(filter?: { type?: "coding" | "review"; enabled?: boolean }): Promise<ProjectRecord[]>;
   getProjectTicketSource(projectId: ProjectId): Promise<ProjectTicketSourceRecord | null>;
   getProjectReviewConfig(projectId: ProjectId): Promise<ProjectReviewConfig | null>;
+  initializeAutomaticReviewPollingSince?(projectId: ProjectId): Promise<Date>;
+  advanceAutomaticReviewPollingSince?(projectId: ProjectId, expected: Date, next: Date): Promise<boolean>;
 }
 
 /**
@@ -41,7 +47,7 @@ export interface ReviewAssignmentTrigger {
   triggerReview(
     integrationId: string,
     changeId: string,
-    options?: { triggerCause?: ReviewTriggerCause },
+    options?: { triggerCause?: ReviewTriggerCause; projectId?: string },
   ): Promise<void>;
 }
 
@@ -88,8 +94,10 @@ export class PollingLoop {
   private reviewTrigger: ReviewAssignmentTrigger | null = null;
   /** Per-changeId timestamp of last review poll — prevents redundant API calls within the same interval. */
   private readonly reviewPollCooldowns = new Map<string, number>();
-  /** Per-integration/change timestamp of the last automatic review trigger. */
+  /** Per-project/change timestamp of the last manual review trigger. */
   private readonly reviewTriggerCooldowns = new Map<string, number>();
+  /** Per-project/change head revision last dispatched by automatic review polling. */
+  private readonly automaticReviewRevisions = new Map<string, { revision: string; checkedAt: number }>();
   /** Reuses repo-bound discovery connectors across watched tasks and polling ticks. */
   private readonly reviewDiscoveryConnectorCache = new Map<
     string,
@@ -196,6 +204,7 @@ export class PollingLoop {
   clearReviewPollingState(): void {
     this.reviewPollCooldowns.clear();
     this.reviewTriggerCooldowns.clear();
+    this.automaticReviewRevisions.clear();
     this.reviewDiscoveryConnectorCache.clear();
   }
 
@@ -352,8 +361,8 @@ export class PollingLoop {
   // ─── Review assignment polling ─────────────────────────────────────────────
 
   /**
-   * For each enabled review project, poll open PRs/MRs where VE is a
-   * requested reviewer and fire the review trigger for each new discovery.
+   * Poll requested assignments for manual projects and post-activation changes
+   * for automatic projects whose providers support revision discovery.
    * Requires `reviewTrigger` to be set; no-op otherwise.
    */
   async pollReviewProjects(): Promise<void> {
@@ -371,14 +380,6 @@ export class PollingLoop {
         continue;
       }
 
-      if ((reviewConfig.assignmentMode ?? "manual") === "automatic") {
-        log.debug(
-          { projectId: project.id, integrationId: reviewConfig.integrationId },
-          "skipping automatic review project assignment backfill",
-        );
-        continue;
-      }
-
       // Stream-events integrations (e.g. Gerrit) receive review assignments
       // via a persistent SSH connection — they never need to be polled.
       if (this.pluginManager.integrationHasStreamEvents?.(reviewConfig.integrationId)) {
@@ -393,11 +394,21 @@ export class PollingLoop {
         reviewConfig.integrationId,
         "code_review"
       );
-      if (!connector || typeof (connector).getOpenReviewAssignments !== "function") {
+      if (!connector || typeof connector.getOpenReviewAssignments !== "function") {
         log.debug(
           { projectId: project.id, integrationId: reviewConfig.integrationId },
           "skipping review project: connector does not support review discovery"
         );
+        continue;
+      }
+
+      const trigger = this.reviewTrigger;
+      if ((reviewConfig.assignmentMode ?? "manual") === "automatic") {
+        try {
+          await this.pollAutomaticReviewProject(project, reviewConfig, connector, trigger, now);
+        } catch (err) {
+          log.warn({ projectId: project.id, err }, "automatic review poll failed");
+        }
         continue;
       }
 
@@ -409,9 +420,8 @@ export class PollingLoop {
         continue;
       }
 
-      const trigger = this.reviewTrigger;
       for (const assignment of assignments) {
-        const cooldownKey = `${reviewConfig.integrationId}:${assignment.changeId}`;
+        const cooldownKey = `${project.id}:${assignment.changeId}`;
         const lastTriggered = this.reviewTriggerCooldowns.get(cooldownKey);
         if (lastTriggered !== undefined && now - lastTriggered < cooldownMs) {
           log.debug({ changeId: assignment.changeId }, "skipping recently triggered review assignment");
@@ -419,14 +429,95 @@ export class PollingLoop {
         }
         this.reviewTriggerCooldowns.set(cooldownKey, now);
         Promise.resolve()
-          .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId, { triggerCause: "backfill" }))
-          .catch((err: unknown) =>
+          .then(() => trigger.triggerReview(reviewConfig.integrationId, assignment.changeId, {
+            triggerCause: "backfill",
+            projectId: project.id,
+          }))
+          .catch((err: unknown) => {
             log.error(
               { projectId: project.id, changeId: assignment.changeId, err },
               "failed to trigger review for discovered assignment"
-            )
-          );
+            );
+          });
       }
+    }
+  }
+
+  /**
+   * Dispatch each new head revision discovered since the project's persisted
+   * watermark, then advance the watermark past every dispatched change except
+   * failures, which stay inside the next scan window for retry.
+   */
+  private async pollAutomaticReviewProject(
+    project: ProjectRecord,
+    reviewConfig: ProjectReviewConfig,
+    connector: ReviewDiscoveryConnector,
+    trigger: ReviewAssignmentTrigger,
+    now: number,
+  ): Promise<void> {
+    const store = this.projectStore;
+    if (!connector.getOpenReviewChanges) {
+      log.debug(
+        { projectId: project.id, integrationId: reviewConfig.integrationId },
+        "skipping automatic review project: connector does not support polling for new revisions",
+      );
+      return;
+    }
+    if (!store?.initializeAutomaticReviewPollingSince) {
+      log.warn({ projectId: project.id }, "skipping automatic review poll: activation time store unavailable");
+      return;
+    }
+
+    const since = await store.initializeAutomaticReviewPollingSince(project.id);
+    const result = await connector.getOpenReviewChanges(reviewConfig.repos, since);
+
+    const dispatches: Array<Promise<{ change: ReviewAssignmentDiscovery; ok: boolean }>> = [];
+    for (const change of result.changes) {
+      const key = `${project.id}:${change.changeId}`;
+      const previous = this.automaticReviewRevisions.get(key);
+      if (change.revision !== undefined && previous?.revision === change.revision) {
+        previous.checkedAt = now;
+        continue;
+      }
+      const checked = change.revision !== undefined ? { revision: change.revision, checkedAt: now } : undefined;
+      if (checked) this.automaticReviewRevisions.set(key, checked);
+      dispatches.push(
+        Promise.resolve()
+          .then(() => trigger.triggerReview(reviewConfig.integrationId, change.changeId, {
+            triggerCause: "revision",
+            projectId: project.id,
+          }))
+          .then(
+            () => ({ change, ok: true }),
+            (err: unknown) => {
+              if (checked && this.automaticReviewRevisions.get(key) === checked) {
+                this.automaticReviewRevisions.delete(key);
+              }
+              log.error(
+                { projectId: project.id, changeId: change.changeId, err },
+                "failed to trigger review for discovered revision",
+              );
+              return { change, ok: false };
+            },
+          ),
+      );
+    }
+    const outcomes = await Promise.all(dispatches);
+
+    if (!result.complete || !store.advanceAutomaticReviewPollingSince) return;
+    let next = since.getTime();
+    for (const change of result.changes) {
+      if (change.updatedAt) {
+        next = Math.max(next, change.updatedAt.getTime() - AUTOMATIC_REVIEW_WATERMARK_OVERLAP_MS);
+      }
+    }
+    for (const { change, ok } of outcomes) {
+      if (ok) continue;
+      if (!change.updatedAt) return;
+      next = Math.min(next, change.updatedAt.getTime() - AUTOMATIC_REVIEW_WATERMARK_OVERLAP_MS);
+    }
+    if (next > since.getTime()) {
+      await store.advanceAutomaticReviewPollingSince(project.id, since, new Date(next));
     }
   }
 
@@ -616,6 +707,9 @@ export class PollingLoop {
     for (const [key, timestamp] of this.reviewTriggerCooldowns) {
       if (now - timestamp >= cooldownMs) this.reviewTriggerCooldowns.delete(key);
     }
+    for (const [key, checked] of this.automaticReviewRevisions) {
+      if (now - checked.checkedAt >= AUTOMATIC_REVIEW_REVISION_TTL_MS) this.automaticReviewRevisions.delete(key);
+    }
   }
 
   // ─── Stalled code-gen task polling ─────────────────────────────────────────
@@ -653,4 +747,3 @@ function repositoryFromChangeId(changeId: string, configuredRepos: readonly stri
   }
   return configuredRepos.length === 1 ? configuredRepos[0] : undefined;
 }
-

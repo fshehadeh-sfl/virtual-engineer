@@ -329,18 +329,29 @@ export interface PolicyBinding {
   createdAt: Date;
 }
 
-/** A single PR/MR that VE has been requested to review. */
+/** A single PR/MR discovered for review. */
 export interface ReviewAssignmentDiscovery {
   /** Provider-specific change ID, e.g. `"owner/repo#42"` for GitHub. */
   changeId: string;
   /** Repository key, e.g. `"owner/repo"`. */
   project: string;
   subject?: string | undefined;
+  /** Provider revision identity, when available, for avoiding repeated polling triggers. */
+  revision?: string | undefined;
+  /** Provider last-update time, used to advance automatic discovery watermarks. */
+  updatedAt?: Date | undefined;
+}
+
+/** Result of an automatic review discovery scan. */
+export interface ReviewChangeDiscoveryResult {
+  changes: ReviewAssignmentDiscovery[];
+  /** False when any repository or page failed, so callers must not advance their watermark. */
+  complete: boolean;
 }
 
 /**
  * Optional capability exposed by review connectors that support polling for
- * open PRs / MRs where VE has been assigned as a reviewer.
+ * manual reviewer assignments or new/updated open changes.
  *
  * The polling loop checks for this interface on the unbound integration
  * connector at each tick and fires a review trigger for every discovered
@@ -348,6 +359,8 @@ export interface ReviewAssignmentDiscovery {
  */
 export interface ReviewDiscoveryConnector {
   getOpenReviewAssignments(repos: string[]): Promise<ReviewAssignmentDiscovery[]>;
+  /** Discover open changes created or updated after automatic polling began. */
+  getOpenReviewChanges?(repos: string[], since: Date): Promise<ReviewChangeDiscoveryResult>;
   /** Return true when VE is still requested as a reviewer for one change. */
   hasReviewAssignment?(changeId: ExternalChangeId): Promise<boolean>;
 }

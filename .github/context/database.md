@@ -60,12 +60,20 @@ to reflect edits. This read-time API adds no schema, index, or migration.
 ## Project Integration Bindings
 
 `project_integration_bindings.config_json` stores capability-specific JSON. The
-`code_review` shape is `{ repos: string[], assignmentMode?: "manual" | "automatic" }`.
+`code_review` shape is `{ repos: string[], assignmentMode?: "manual" | "automatic", automaticPollingSince?: number }`.
 The project store normalizes an absent or invalid `assignmentMode` to `manual`;
-no SQL column or migration is required. `automatic` means the reviewer provider
-adds VE idempotently on revision events, while initial open-change backfill is
-disabled. Mode changes are execution-affecting and persist immediately without
-an active-task confirmation roundtrip.
+no SQL column or migration is required. `automaticPollingSince` is the
+automatic discovery watermark in Unix seconds: it starts at the activation time
+and `advanceAutomaticReviewPollingSince(projectId, expected, next)` moves it
+forward with a compare-and-set after complete polls. For older automatic
+bindings without that value, `initializeAutomaticReviewPollingSince(projectId)`
+atomically sets it on the first poll. Unchanged automatic review bindings
+preserve it across admin saves and restarts; a malformed previous binding JSON
+is treated as a fresh activation. `automatic` means the reviewer provider adds VE
+idempotently on revision events, including changes found by polling after
+activation, while initial open-change backfill is disabled. Mode changes are
+execution-affecting and persist immediately without an active-task confirmation
+roundtrip.
 
 `StateStore.updateProjectConfiguration()` returns the updated project plus an
 `executionChanged` flag. Execution-affecting changes now persist immediately
