@@ -67,7 +67,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
     name: agent?.name ?? "",
     type: agent?.type ?? "coding",
     reviewStrategy: agent?.reviewStrategy ?? "ve_direct",
-    integrationId: agent?.integrationId ?? (agentIntegrations[0]?.id ?? ""),
+    integrationId: agent?.integrationId ?? "",
     model: (agent?.modelConfig as Record<string, string>)?.["model"] ?? "",
     maxConcurrent: agent?.maxConcurrent?.toString() ?? "1",
     systemPromptId: agent?.systemPromptId ?? "",
@@ -289,31 +289,32 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               <option value="review">Review</option>
             </FieldSelect>
           </Field>
-
-          {reviewStrategies.length > 0 && (
-            <Field label="Review strategy" required hint="Choose how this provider performs code review">
-              <FieldSelect value={form.reviewStrategy} onChange={setReviewStrategy}>
-                <option value="ve_direct">VE direct</option>
-                {reviewStrategies.map((strategy) => (
-                  <option key={strategy.id} value={strategy.id}>
-                    {strategy.label}{strategy.experimental ? " (experimental)" : ""}
-                  </option>
-                ))}
-              </FieldSelect>
-            </Field>
-          )}
         </div>
 
         <Field label="Agent Integration" required hint="An enabled agent-execution integration (e.g. Copilot, Claude, Aider)">
           <FieldSelect data-tour="agent-form-integration" value={form.integrationId} onChange={setIntegration}>
             {agentIntegrations.length === 0 && <option value="">— no agent integrations —</option>}
+            {agentIntegrations.length > 0 && <option value="">— select —</option>}
             {agentIntegrations.map((i) => (
               <option key={i.id} value={i.id}>{i.name} ({i.provider})</option>
             ))}
           </FieldSelect>
         </Field>
 
-        {!nativeReview && <Field
+        {reviewStrategies.length > 0 && (
+          <Field label="Review strategy" required hint="Choose how this provider performs code review">
+            <FieldSelect value={form.reviewStrategy} onChange={setReviewStrategy}>
+              <option value="ve_direct">VE direct</option>
+              {reviewStrategies.map((strategy) => (
+                <option key={strategy.id} value={strategy.id}>
+                  {strategy.label}{strategy.experimental ? " (experimental)" : ""}
+                </option>
+              ))}
+            </FieldSelect>
+          </Field>
+        )}
+
+        {form.integrationId && !nativeReview && <Field
           label="Model"
           hint={availableModels.length > 0 ? "Select a model or leave on default" : "Leave blank to use default (auto)"}
           labelAction={selectedIntegration?.provider === "copilot" && (
@@ -345,7 +346,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
             <FieldInput data-tour="agent-form-model" value={form.model} placeholder={modelsLoading ? "Loading models…" : "auto"} onChange={set("model")} disabled={modelsLoading} />
           )}
         </Field>}
-        {!nativeReview && modelsError && <FormError msg={modelsError} />}
+        {form.integrationId && !nativeReview && modelsError && <FormError msg={modelsError} />}
 
         <Field label="Max Concurrent" hint="Maximum simultaneous agent cycles (≥1)">
           <FieldInput data-tour="agent-form-concurrency" type="number" min={1} value={form.maxConcurrent} onChange={set("maxConcurrent")} />
@@ -434,6 +435,7 @@ export function AgentFormModal({ agent, integrations, plugins, prompts, onClose,
               onChange={setToolAuth}
               provider={selectedIntegration?.provider}
               plugin={selectedPlugin}
+              agentType={form.type}
             />
           </div>
         )}

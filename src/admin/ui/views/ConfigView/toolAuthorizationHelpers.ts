@@ -153,6 +153,7 @@ export interface ToolAuthorizationSectionProps {
   onChange: (state: ToolAuthorizationState) => void;
   provider: string | undefined;
   plugin: ApiPlugin | undefined;
+  agentType?: "coding" | "review" | undefined;
 }
 
 function asStringArray(value: unknown): string[] {

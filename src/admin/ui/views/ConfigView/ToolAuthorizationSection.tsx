@@ -10,7 +10,8 @@
  * - Goose: developerExtension toggle.
  *
  * The section is hidden for providers that don't support tool authorization
- * or have not been resolved yet.
+ * or have not been resolved yet. Codegen-only toggles (Aider git, Goose
+ * developer extension) are hidden for review agents.
  */
 import { Field, FieldSelect, FieldTextarea } from "../../components/Modal.tsx";
 import {
@@ -20,8 +21,11 @@ import {
   type ToolAuthorizationState,
 } from "./toolAuthorizationHelpers.ts";
 
-export function ToolAuthorizationSection({ state, onChange, provider }: ToolAuthorizationSectionProps) {
+export function ToolAuthorizationSection({ state, onChange, provider, agentType }: ToolAuthorizationSectionProps) {
   if (!supportsToolAuthorization(provider)) return null;
+  // Review runs force codegen-only capabilities off, so their toggles would have no effect.
+  const isReview = agentType === "review";
+  if (isReview && provider === "goose") return null;
 
   const update = (patch: Partial<ToolAuthorizationState>) => onChange({ ...state, ...patch });
 
@@ -94,7 +98,7 @@ export function ToolAuthorizationSection({ state, onChange, provider }: ToolAuth
               <option value="true">Enabled</option>
             </FieldSelect>
           </Field>
-          <Field label="Git integration" hint="When on (codegen only), Aider uses git for commits. Review always disables git (read-only mount).">
+          {!isReview && <Field label="Git integration" hint="When on (codegen only), Aider uses git for commits. Review always disables git (read-only mount).">
             <FieldSelect
               value={state.git ? "true" : "false"}
               onChange={(e) => update({ git: e.currentTarget.value === "true" })}
@@ -102,7 +106,7 @@ export function ToolAuthorizationSection({ state, onChange, provider }: ToolAuth
               <option value="true">Enabled (default)</option>
               <option value="false">Disabled</option>
             </FieldSelect>
-          </Field>
+          </Field>}
         </>
       )}
 
