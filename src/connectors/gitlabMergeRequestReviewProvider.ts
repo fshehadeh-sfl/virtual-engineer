@@ -61,6 +61,28 @@ const MrSchema = z.object({
   diff_refs: DiffRefsSchema,
 });
 
+interface InlinePositionTarget {
+  oldPath: string;
+  newPath: string;
+  lines: Set<number>;
+}
+
+/** Index changed files by new path, keeping the original path GitLab requires for renamed-file positions. */
+function inlinePositionTargets(
+  changes: ReadonlyArray<{ old_path: string; new_path: string; diff: string }>,
+): Map<string, InlinePositionTarget> {
+  const targets = new Map<string, InlinePositionTarget>();
+  for (const change of changes) {
+    const newPath = change.new_path || change.old_path;
+    targets.set(newPath, {
+      oldPath: change.old_path || newPath,
+      newPath,
+      lines: parsePatchNewLineNumbers(change.diff),
+    });
+  }
+  return targets;
+}
+
 const MrChangeSchema = z.object({
   old_path: z.string(),
   new_path: z.string(),
@@ -214,6 +236,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       project: projectPath,
       targetBranch: mr.target_branch,
       url: mr.web_url,
+      headSha: mr.sha ?? mr.diff_refs?.head_sha ?? undefined,
     };
   }
 
@@ -385,6 +408,19 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     signal?: AbortSignal,
   ): Promise<ReviewOverviewPublicationResult> {
     const { project, iid } = this.parseChange(changeId);
+    const headSha = publication.details.headSha;
+    const reviewedRevisionError = (): ReviewApiError => new ReviewApiError(
+      409, this.mrUrl(project, iid), "Merge request no longer matches the reviewed revision",
+    );
+    if (!headSha || publication.details.status !== "OPEN") throw reviewedRevisionError();
+    const current = MrSchema.parse(await this.http.fetchJson(
+      this.mrUrl(project, iid),
+      signal !== undefined ? { signal } : undefined,
+    ));
+    if (current.state !== "opened") {
+      throw new ReviewApiError(409, this.mrUrl(project, iid), "Merge request is no longer open for the reviewed revision");
+    }
+    if ((current.sha ?? current.diff_refs?.head_sha) !== headSha) throw reviewedRevisionError();
     let advisoryOnly = false;
     if (publication.score === -1) {
       if (await this.requestChanges(project, iid, signal) === "unsupported") {
@@ -400,23 +436,24 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     const inline: PublishedReviewFinding[] = [];
     const folded: InlineReviewComment[] = [...publication.folded];
     let refs: z.infer<typeof DiffRefsSchema> = null;
-    const validLinesByFile = new Map<string, Set<number>>();
+    let positions = new Map<string, InlinePositionTarget>();
     if (publication.comments.some((comment) => comment.line > 0)) {
       const changes = MrChangesResponseSchema.parse(await this.http.fetchJson(
         `${this.mrUrl(project, iid)}/changes`,
         signal !== undefined ? { signal } : undefined,
       ));
       refs = changes.diff_refs;
-      for (const change of changes.changes) {
-        validLinesByFile.set(change.new_path || change.old_path, parsePatchNewLineNumbers(change.diff));
-      }
+      if (refs?.head_sha !== headSha) throw reviewedRevisionError();
+      positions = inlinePositionTargets(changes.changes);
     }
     for (const comment of publication.comments) {
+      const target = positions.get(comment.file);
       if (comment.line <= 0 ||
           typeof refs?.base_sha !== "string" ||
           typeof refs.head_sha !== "string" ||
           typeof refs.start_sha !== "string" ||
-          !validLinesByFile.get(comment.file)?.has(comment.line)) {
+          target === undefined ||
+          !target.lines.has(comment.line)) {
         folded.push(comment);
         continue;
       }
@@ -431,9 +468,9 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
               head_sha: refs.head_sha,
               start_sha: refs.start_sha,
               position_type: "text",
-              new_path: comment.file,
+              new_path: target.newPath,
               new_line: comment.line,
-              old_path: comment.file,
+              old_path: target.oldPath,
             },
           }),
           ...(signal !== undefined ? { signal } : {}),
@@ -529,7 +566,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     let diffRefs:
       | { base_sha?: string | null | undefined; head_sha?: string | null | undefined; start_sha?: string | null | undefined }
       | null = null;
-    const validLinesByFile = new Map<string, Set<number>>();
+    let positions = new Map<string, InlinePositionTarget>();
     if (positiveLine.length > 0) {
       try {
         const res = MrChangesResponseSchema.parse(
@@ -539,9 +576,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
           )
         );
         diffRefs = res.diff_refs ?? null;
-        for (const ch of res.changes) {
-          if (ch.diff) validLinesByFile.set(ch.new_path || ch.old_path, parsePatchNewLineNumbers(ch.diff));
-        }
+        positions = inlinePositionTargets(res.changes.filter((change) => change.diff.length > 0));
       } catch (err) {
         if (signal?.aborted === true) throw signal.reason ?? err;
         log.warn({ project, iid, err }, "failed to fetch MR changes for line validation; folding comments into summary");
@@ -556,7 +591,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       typeof diffRefs.head_sha === "string" &&
       typeof diffRefs.start_sha === "string";
     for (const c of positiveLine) {
-      const validLines = validLinesByFile.get(c.file);
+      const validLines = positions.get(c.file)?.lines;
       if (canPositionInline && (validLines === undefined || validLines.has(c.line))) inline.push(c);
       else outOfDiff.push(c);
     }
@@ -575,7 +610,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
               position_type: "text",
               new_path: c.file,
               new_line: c.line,
-              old_path: c.file,
+              old_path: positions.get(c.file)?.oldPath ?? c.file,
             },
           }),
           ...(signal !== undefined ? { signal } : {}),
@@ -754,13 +789,12 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       project: z.object({ mergeRequest: ReviewersSchema.nullable() }).nullable(),
     }).parse(response.data);
     const currentUserId = data.currentUser?.id;
-    const ownState = currentUserId === undefined
-      ? undefined
-      : this.ownReviewState(data.project?.mergeRequest ?? null, currentUserId);
-    if (currentUserId === undefined || ownState === undefined) {
+    const mergeRequest = data.project?.mergeRequest ?? null;
+    if (currentUserId === undefined || mergeRequest === null) {
       throw new ReviewApiError(422, url, "Cannot determine own GitLab MR review state");
     }
-    if (ownState !== "REQUESTED_CHANGES") return;
+    // A user absent from the reviewer list cannot hold a changes request.
+    if (this.ownReviewState(mergeRequest, currentUserId) !== "REQUESTED_CHANGES") return;
 
     const removed = await this.graphql(
       "mutation($input: MergeRequestDestroyRequestedChangesInput!) { mergeRequestDestroyRequestedChanges(input: $input) { errors mergeRequest { reviewers(first: 100) { nodes { id mergeRequestInteraction { reviewState } } } } } }",
