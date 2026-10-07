@@ -84,8 +84,6 @@ const ConfigSchema = z.object({
     ticketCloseMaxRetries: z.coerce.number().int().positive().default(5),
     /** Minimum backoff between ticket-close retries (ms). */
     ticketCloseRetryMinTimeoutMs: z.coerce.number().int().positive().default(5_000),
-    /** Maximum diff characters injected into the review prompt (prevents token blow-ups). */
-    maxReviewDiffChars: z.coerce.number().int().positive().default(60_000),
     /** Maximum number of inline comments VE posts per review pass (excess is folded into the summary). */
     maxReviewComments: z.coerce.number().int().positive().default(20),
     /** Maximum number of discussion-thread replies VE posts per review pass. */
@@ -118,7 +116,6 @@ function fromEnv(): Record<string, string | undefined> {
     agentTimeoutMs: process.env["AGENT_TIMEOUT_MS"],
     ticketCloseMaxRetries: process.env["TICKET_CLOSE_MAX_RETRIES"],
     ticketCloseRetryMinTimeoutMs: process.env["TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS"],
-    maxReviewDiffChars: process.env["MAX_REVIEW_DIFF_CHARS"],
     maxReviewComments: process.env["MAX_REVIEW_COMMENTS"],
     maxReviewReplies: process.env["MAX_REVIEW_REPLIES"],
     reviewMinSeverity: process.env["REVIEW_MIN_SEVERITY"],

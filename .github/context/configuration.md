@@ -43,7 +43,6 @@ There is no `PUBLIC_BASE_URL` env var in `ConfigSchema`; a `publicBaseUrl` value
 | `AGENT_TIMEOUT_MS` | `3_600_000` | **DB-managed** seed only. Host-side agent timeout (60 min); the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
 | `TICKET_CLOSE_MAX_RETRIES` | `5` | **DB-managed** seed only. `pRetry` retry count for `closeTicket()`'s ticket-closing call after MERGED; the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
 | `TICKET_CLOSE_RETRY_MIN_TIMEOUT_MS` | `5000` | **DB-managed** seed only. `pRetry` minimum backoff (ms) between ticket-close retries; the live value lives in `app_settings` and is edited at runtime via admin UI → System Settings. |
-| `MAX_REVIEW_DIFF_CHARS` | `60_000` | Max diff characters injected into the review prompt. |
 | `MAX_REVIEW_COMMENTS` | `20` | Max inline comments posted per review pass; the rest are folded into the summary. |
 | `MAX_REVIEW_REPLIES` | `20` | Max discussion-thread replies VE posts per review pass. |
 | `REVIEW_MIN_SEVERITY` | `info` | Minimum severity (`nit` < `info` < `warning` < `error`) for an inline comment; lower severities are folded into the summary. |

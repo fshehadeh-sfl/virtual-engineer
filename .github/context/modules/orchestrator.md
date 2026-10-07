@@ -6,6 +6,7 @@ This module set covers the **ticket-driven code-generation runtime**. The separa
 
 ## Review execution — `src/review/reviewOrchestrator.ts`
 
+- `buildReviewPrompt()` includes every file's complete diff (and the complete inter-patchset delta on re-review); it never silently truncates the prompt at a character limit. `MAX_REVIEW_DIFF_CHARS` has been removed. Providers that reject an oversized prompt fail the cycle instead of posting a partial review; provider-side context handling remains model-dependent.
 - A review result is bound to the patchset used for checkout, diff construction, prompt construction, and agent execution. Immediately before provider effects, `runReview()` fetches fresh change details and posts only when both the patchset still matches and the change remains `OPEN`.
 - On re-review, providers that implement `getInterPatchsetDiff()` contribute a focused delta between the last reviewed revision and the current one; patchset identifiers are identity tokens, so the orchestrator checks inequality rather than assuming numeric ordering.
 - Copilot and Claude submit their typed result through the worker-owned `ve_submit_review` MCP tool; Aider retains the delimited JSON fallback. In both cases `parseReviewResult()` remains the host-side authority before filtering, deduplication, comments, replies, or votes. The MCP server never performs provider effects itself.

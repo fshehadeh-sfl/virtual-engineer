@@ -94,22 +94,26 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain("Focus exclusively on security issues.");
   });
 
-  it("truncates the diff section once the budget is exhausted", () => {
-    const huge: ReviewChangeDiff = {
+  it("includes every file in a diff larger than the former 60,000-character limit", () => {
+    const large: ReviewChangeDiff = {
       changeId: CHANGE_ID,
       patchset: 1,
       files: Array.from({ length: 5 }, (_, i) => ({
         path: `src/big-${i}.ts`,
         status: "modified" as const,
-        patch: "+x\n".repeat(20_000),
+        patch: `+unique-${i}\n` + "+x\n".repeat(20_000),
       })),
     };
     const prompt = buildReviewPrompt({
       details,
-      diff: huge,
+      diff: large,
       instructionsPrompt: "Review this.",
     });
-    expect(prompt).toContain("diff truncated");
+    for (const file of large.files) {
+      expect(prompt).toContain(`### ${file.path} (${file.status})`);
+      expect(prompt).toContain(file.patch);
+    }
+    expect(prompt).not.toContain("diff truncated");
   });
 
   it("omits the prior-comments section when none are provided", () => {
@@ -283,61 +287,32 @@ describe("buildReviewPrompt since-last-review delta", () => {
     expect(prompt).toContain("## Unified diffs");
   });
 
-  it("delta and full diff share the maxDiffChars budget — at least one is truncated when both are large", () => {
-    // Each patch is ~600 chars. With maxDiffChars=1000, each fits individually
-    // (600 < 1000) but together they would exceed the budget (1200 > 1000).
-    // The fix: split the budget so the combined diff content stays within maxDiffChars.
-    // Without the fix both sections render fully → neither is truncated (bug).
-    const maxDiffChars = 1000;
-    const patch600 = "+" + "x".repeat(600);
-
-    const bigFullDiff: ReviewChangeDiff = {
-      changeId: CHANGE_ID,
-      patchset: 3,
-      files: [{ path: "src/full.ts", status: "modified" as const, patch: patch600 }],
-    };
-    const bigDeltaDiff: ReviewChangeDiff = {
-      changeId: CHANGE_ID,
-      patchset: 3,
-      files: [{ path: "src/delta.ts", status: "modified" as const, patch: patch600 }],
-    };
-
-    const prompt = buildReviewPrompt({
-      details,
-      diff: bigFullDiff,
-      instructionsPrompt: "Review.",
-      maxDiffChars,
-      sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: bigDeltaDiff },
-    });
-
-    const deltaIdx = prompt.indexOf("## Changes since last reviewed patchset");
-    const fullDiffIdx = prompt.indexOf("## Unified diffs");
-    const deltaSection = prompt.slice(deltaIdx, fullDiffIdx);
-    const diffSection = prompt.slice(fullDiffIdx);
-
-    // At least one section must be truncated to respect the shared budget.
-    const atLeastOneTruncated =
-      deltaSection.includes("diff truncated") || diffSection.includes("diff truncated");
-    expect(atLeastOneTruncated).toBe(true);
-  });
-
-  it("truncates the delta diff when it exceeds maxDiffChars", () => {
+  it("includes the complete delta and full diff on a re-review", () => {
     const hugeDeltaDiff: ReviewChangeDiff = {
       changeId: CHANGE_ID,
       patchset: 3,
-      files: Array.from({ length: 5 }, (_, i) => ({
-        path: `src/delta-big-${i}.ts`,
-        status: "modified" as const,
+      files: [{
+        path: "src/delta-big.ts",
+        status: "modified",
         patch: "+delta\n".repeat(20_000),
-      })),
+      }],
+    };
+    const hugeFullDiff: ReviewChangeDiff = {
+      ...diff,
+      files: [{
+        path: "src/full-big.ts",
+        status: "modified",
+        patch: "+full\n".repeat(20_000),
+      }],
     };
     const prompt = buildReviewPrompt({
       details,
-      diff,
+      diff: hugeFullDiff,
       instructionsPrompt: "Review this.",
       sinceLastReview: { fromPatchset: 2, toPatchset: 3, diff: hugeDeltaDiff },
     });
-    expect(prompt).toContain("## Changes since last reviewed patchset");
-    expect(prompt).toContain("diff truncated");
+    expect(prompt).toContain(hugeDeltaDiff.files[0]!.patch);
+    expect(prompt).toContain(hugeFullDiff.files[0]!.patch);
+    expect(prompt).not.toContain("diff truncated");
   });
 });

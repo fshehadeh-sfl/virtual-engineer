@@ -120,8 +120,6 @@ export interface ReviewOrchestratorDeps {
     openCodeProvider?: string | undefined;
     openCodeApiBase?: string | undefined;
   } | null>;
-  /** Maximum diff characters injected into the review prompt. Defaults to 60 000. */
-  maxDiffChars?: number | undefined;
   /** Maximum number of inline comments posted per review pass. Defaults to 20. */
   maxReviewComments?: number | undefined;
   /** Maximum number of discussion-thread replies posted per review pass. Defaults to 20. */
@@ -832,7 +830,6 @@ export class ReviewOrchestrator {
             }
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
-        ...(this.deps.maxDiffChars !== undefined ? { maxDiffChars: this.deps.maxDiffChars } : {}),
         ...(sinceLastReview !== undefined ? { sinceLastReview } : {}),
       });
 

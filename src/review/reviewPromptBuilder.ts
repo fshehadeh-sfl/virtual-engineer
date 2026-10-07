@@ -6,11 +6,7 @@
  */
 import type { ReviewChangeDetails, ReviewChangeDiff, ReviewDiscussionThread } from "../interfaces.js";
 
-/** Default upper bound on diff size injected into the prompt to avoid token blow-ups. */
-const DEFAULT_MAX_DIFF_CHARS = 60_000;
 const DEFAULT_MAX_COMMIT_MESSAGE_CHARS = 8_000;
-const TRUNCATION_NOTE =
-  "\n\n[... diff truncated to fit in the model context — review the rest from the repository if needed ...]";
 const COMMIT_MESSAGE_TRUNCATION_NOTE =
   "\n\n[... commit message truncated to fit in the model context ...]";
 
@@ -19,8 +15,6 @@ export interface ReviewPromptInput {
   diff: ReviewChangeDiff;
   /** Instructions/checklist appended to the dynamic review user prompt. */
   instructionsPrompt: string;
-  /** Optional override for the max diff size in characters. Defaults to 60 000. */
-  maxDiffChars?: number | undefined;
   /**
    * Comments VE has already posted on this change in previous review cycles.
    * Injected so the agent does not re-raise points it has already made.
@@ -63,18 +57,10 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     details,
     diff,
     instructionsPrompt,
-    maxDiffChars,
     priorComments,
     discussionThreads,
     sinceLastReview,
   } = input;
-
-  const effectiveMax = maxDiffChars ?? DEFAULT_MAX_DIFF_CHARS;
-  const hasDelta = sinceLastReview !== undefined && sinceLastReview.diff.files.length > 0;
-  // When both a delta section and a full diff are present, split the budget
-  // equally so the combined diff content stays within effectiveMax chars.
-  const deltaBudget = hasDelta ? Math.floor(effectiveMax / 2) : effectiveMax;
-  const fullDiffBudget = hasDelta ? effectiveMax - deltaBudget : effectiveMax;
 
   const header = [
     `# Code Review Task`,
@@ -90,7 +76,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     .map((f) => `- ${f.status.toUpperCase().padEnd(8)} ${f.path}`)
     .join("\n");
 
-  const diffSections = renderDiffSections(diff, fullDiffBudget);
+  const diffSections = renderDiffSections(diff);
 
   const sections = [
     header,
@@ -125,7 +111,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     sections.push(
       ``,
       `## Changes since last reviewed patchset (PS ${sinceLastReview.fromPatchset} \u2192 ${sinceLastReview.toPatchset})`,
-      renderSinceLastReview(sinceLastReview, deltaBudget),
+      renderSinceLastReview(sinceLastReview),
     );
   }
 
@@ -190,20 +176,11 @@ function renderDiscussionThreads(threads: ReviewDiscussionThread[]): string {
   ].join("\n");
 }
 
-/** Render each file's diff as a fenced code block, truncating when the total exceeds `maxDiffChars`. */
-function renderDiffSections(diff: ReviewChangeDiff, maxDiffChars: number): string {
-  const parts: string[] = [];
-  let used = 0;
-  for (const file of diff.files) {
-    const block = `### ${file.path} (${file.status})\n\`\`\`diff\n${file.patch || "(no textual diff)"}\n\`\`\``;
-    if (used + block.length > maxDiffChars) {
-      parts.push(TRUNCATION_NOTE);
-      break;
-    }
-    parts.push(block);
-    used += block.length;
-  }
-  return parts.join("\n\n");
+/** Render every file's diff; an oversized prompt must fail, not silently omit files. */
+function renderDiffSections(diff: ReviewChangeDiff): string {
+  return diff.files.map((file) =>
+    `### ${file.path} (${file.status})\n\`\`\`diff\n${file.patch || "(no textual diff)"}\n\`\`\``
+  ).join("\n\n");
 }
 
 function truncateCommitMessage(description: string): string {
@@ -214,17 +191,16 @@ function truncateCommitMessage(description: string): string {
 
 /**
  * Render the inter-patchset delta as a guidance note followed by the delta diff.
- * Caps the diff with the same per-section budget as the full diff. Rebase noise
- * (upstream changes pulled in between patchsets) may appear here; the note tells
- * the agent to treat it as such.
+ * Rebase noise (upstream changes pulled in between patchsets) may appear here;
+ * the note tells the agent to treat it as such.
  */
-function renderSinceLastReview(delta: SinceLastReviewDelta, maxDiffChars: number): string {
+function renderSinceLastReview(delta: SinceLastReviewDelta): string {
   return [
     "These are the changes between the patchset you last reviewed and the current",
     "one. Focus genuinely new findings on this delta. If the change was rebased,",
     "some hunks here may be upstream churn rather than author edits — judge",
     "accordingly. The full change is still provided below for context.",
     "",
-    renderDiffSections(delta.diff, maxDiffChars),
+    renderDiffSections(delta.diff),
   ].join("\n");
 }
