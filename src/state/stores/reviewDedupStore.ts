@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type {
   ExternalChangeId,
@@ -56,7 +56,7 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
 
   async function getPostedReviewCommentHashes(taskId: TaskId): Promise<Set<string>> {
     const rows = await db.query.postedReviewComments.findMany({
-      where: eq(postedReviewComments.taskId, taskId),
+      where: and(eq(postedReviewComments.taskId, taskId), eq(postedReviewComments.resolved, 0)),
     });
     return new Set(rows.map((row) => row.commentHash));
   }
@@ -75,6 +75,8 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
       message: row.message,
       severity: row.severity,
       providerThreadId: row.providerThreadId,
+      providerCommentUrl: row.providerCommentUrl,
+      disposition: row.disposition,
       resolved: row.resolved === 1,
       createdAt: row.createdAt,
     }));
@@ -87,12 +89,13 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
   ): Promise<void> {
     if (comments.length === 0) return Promise.resolve();
     const now = Math.floor(Date.now() / 1000);
-    // INSERT OR IGNORE so a duplicate (task_id, comment_hash) is silently skipped
-    // rather than aborting the whole batch on the unique index.
+    // Only one active occurrence of a finding is recorded. A previously fixed
+    // occurrence remains in history when the same issue reappears.
     const stmt = raw.prepare(
       `INSERT OR IGNORE INTO posted_review_comments
-         (task_id, change_id, comment_hash, file, line, message, severity, provider_thread_id, resolved, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+         (task_id, change_id, comment_hash, file, line, message, severity,
+          provider_thread_id, provider_comment_url, disposition, resolved, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
     );
     const insertMany = raw.transaction((items: PostedReviewCommentInput[]) => {
       for (const c of items) {
@@ -105,6 +108,8 @@ export function createReviewDedupStore(context: ReviewDedupStoreContext): Review
           c.message,
           c.severity,
           c.providerThreadId ?? null,
+          c.providerCommentUrl ?? null,
+          c.disposition ?? "unknown",
           now
         );
       }

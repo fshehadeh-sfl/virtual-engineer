@@ -133,9 +133,10 @@ export const processedComments = sqliteTable(
 );
 
 /**
- * Records every inline review comment VE has already posted on a change, keyed
- * by a stable content hash. Used to deduplicate comments across re-reviews
- * (new patchsets) so the same issue is never posted twice. Integration-agnostic:
+ * Records handled review findings, including those folded into a summary.
+ * An active content hash is deduplicated across re-reviews; a verified fixed
+ * finding can be reported again if the same issue is reintroduced.
+ * Integration-agnostic:
  * populated by the ReviewOrchestrator regardless of the review backend.
  */
 export const postedReviewComments = sqliteTable(
@@ -156,16 +157,18 @@ export const postedReviewComments = sqliteTable(
     severity: text("severity").notNull().default(""),
     /** Provider-side thread/comment id, captured for later resolution. NULL when unknown. */
     providerThreadId: text("provider_thread_id"),
-    /** 1 once VE has resolved this thread (issue addressed in a later patchset). */
+    providerCommentUrl: text("provider_comment_url"),
+    disposition: text("disposition", { enum: ["unknown", "inline", "folded"] }).notNull().default("unknown"),
+    /** 1 once VE has verified the finding fixed; provider thread resolution is independent. */
     resolved: integer("resolved").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   },
   (table) => ({
     idxPostedReviewCommentsTaskId: index("idx_posted_review_comments_task_id").on(table.taskId),
-    uqPostedReviewCommentsTaskHash: unique("uq_posted_review_comments_task_hash").on(
+    uqPostedReviewCommentsTaskActiveHash: uniqueIndex("uq_posted_review_comments_task_active_hash").on(
       table.taskId,
       table.commentHash
-    ),
+    ).where(sql`${table.resolved} = 0`),
   })
 );
 

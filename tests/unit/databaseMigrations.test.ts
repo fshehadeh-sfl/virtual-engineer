@@ -57,6 +57,11 @@ function openMemoryDatabase(): Database.Database {
 
 function removePostBridgeOwnershipSchema(raw: Database.Database): void {
   raw.exec(`
+    DROP INDEX uq_posted_review_comments_task_active_hash;
+    ALTER TABLE posted_review_comments DROP COLUMN provider_comment_url;
+    ALTER TABLE posted_review_comments DROP COLUMN disposition;
+    CREATE UNIQUE INDEX uq_posted_review_comments_task_hash
+      ON posted_review_comments(task_id, comment_hash);
     DROP INDEX idx_agents_owner_user_id;
     DROP INDEX idx_integrations_owner_user_id;
     DROP INDEX idx_oauth_apps_owner_user_id;
