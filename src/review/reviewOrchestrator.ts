@@ -83,6 +83,7 @@ export interface ReviewOrchestratorDeps {
     | "getPostedReviewCommentHashes"
     | "getPostedReviewComments"
     | "markReviewCommentsPosted"
+      | "markReviewCommentResolved"
     | "getHandledThreadReplyHashes"
     | "markThreadReplyPosted"
   > & {
@@ -508,8 +509,10 @@ export class ReviewOrchestrator {
     }
 
     if (!completedCurrentPatchset) {
+      const remoteId = metadata?.["reviewPublicationId"];
       const reason =
-        "Review interrupted during provider posting; remote effects may be partial and require a controlled retry";
+        "Review interrupted during provider posting; remote effects may be partial and require a controlled retry" +
+        (typeof remoteId === "string" ? ` (remote publication: ${remoteId})` : "");
       await this.deps.stateStore.setFailureReason(taskId, reason);
       await this.deps.stateStore.transition(taskId, "REVIEW_FAILED");
       return;
@@ -662,6 +665,7 @@ export class ReviewOrchestrator {
       this.withAbortSignal(operation, deadlineController.signal, timeoutError);
     startDeadline();
     let cycleLease: ConcurrencyLease | undefined;
+    let reviewPublicationId: string | undefined;
 
     try {
       const project = task.projectId
@@ -750,7 +754,9 @@ export class ReviewOrchestrator {
 
       // Feed comments VE already posted on this change back into the
       // prompt so the agent does not re-raise points it has already made.
-      const priorComments = await withinDeadline(this.deps.stateStore.getPostedReviewComments(taskId));
+      const hostedReview = this.deps.reviewProvider.kind === "github" || this.deps.reviewProvider.kind === "gitlab";
+      const priorComments = (await withinDeadline(this.deps.stateStore.getPostedReviewComments(taskId)))
+        .filter((comment) => !hostedReview || !comment.resolved);
 
       // Fetch open human discussion threads so the agent can reply. Guarded:
       // providers without thread support skip this entirely. A thread is
@@ -825,10 +831,12 @@ export class ReviewOrchestrator {
         ...(priorComments.length > 0
           ? {
               priorComments: priorComments.map((c) => ({
+                ...(hostedReview ? { id: c.id } : {}),
                 file: c.file,
                 line: c.line,
                 message: c.message,
               })),
+              reassessPriorFindings: hostedReview,
             }
           : {}),
         ...(eligibleThreads.length > 0 ? { discussionThreads: eligibleThreads } : {}),
@@ -952,6 +960,19 @@ export class ReviewOrchestrator {
 
       const result = parseReviewResult(rawOutput, this.deps.reviewProvider.kind);
       const decision = getReviewDecision(result);
+      if (hostedReview && decision < 0 && !result.requiredAction?.trim()) {
+        throw new Error("A negative hosted review requires an actionable before approval step");
+      }
+      const activePrior = hostedReview ? priorComments.filter((comment) => !comment.resolved) : [];
+      const assessments = result.priorFindingAssessments ?? [];
+      const assessmentById = new Map(assessments.map((assessment) => [assessment.findingId, assessment]));
+      if (hostedReview && (
+        assessments.length !== activePrior.length ||
+        assessmentById.size !== activePrior.length ||
+        activePrior.some((comment) => !assessmentById.has(comment.id))
+      )) {
+        throw new Error("Invalid prior finding assessment: every active finding must be assessed exactly once");
+      }
 
       // Drop comments referencing files outside the patchset diff before dedup,
       // gating, persistence and summary folding. Otherwise hallucinated-path
@@ -1023,13 +1044,19 @@ export class ReviewOrchestrator {
         throw new ReviewSupersededError(latestDetails);
       }
       const reviewPatchset = details.currentPatchset;
+      const fixedFindings = activePrior.filter((comment) => assessmentById.get(comment.id)?.status === "fixed");
+      const fixedHashes = new Set(fixedFindings.map((comment) => comment.commentHash));
+      if (fixedFindings.length > 0) await this.assertReviewStillActive(taskId);
+      for (const comment of fixedFindings) {
+        await this.deps.stateStore.markReviewCommentResolved(comment.id);
+      }
 
       // Deduplicate inline comments against ones VE already posted on
       // this change. Only newly-found issues are published; the overall vote and
       // summary still reflect the full result.
       const postedHashes = await this.deps.stateStore.getPostedReviewCommentHashes(taskId);
       const newComments = inDiffComments.filter(
-        (c) => !postedHashes.has(computeCommentHash(c)),
+        (c) => !postedHashes.has(computeCommentHash(c)) || fixedHashes.has(computeCommentHash(c)),
       );
       const dedupedCount = inDiffComments.length - newComments.length;
 
@@ -1040,6 +1067,15 @@ export class ReviewOrchestrator {
         minSeverity: this.deps.reviewMinSeverity ?? "info",
         maxComments: this.deps.maxReviewComments ?? 20,
       });
+      if (hostedReview) {
+        for (let index = commentsToPost.length - 1; index >= 0; index--) {
+          const comment = commentsToPost[index];
+          if (comment !== undefined && comment.line === 0) {
+            commentsToPost.splice(index, 1);
+            folded.push(comment);
+          }
+        }
+      }
       const summary = result.summary + buildFoldedSummary(folded);
 
       // Validate the agent's replies against the eligible thread set: drop
@@ -1054,7 +1090,7 @@ export class ReviewOrchestrator {
       // another summary + vote notification. This gate is decoupled from
       // discussion replies: a pending reply is always delivered through its own
       // path below and never forces the verdict to be re-posted.
-      const hasNothingNew = commentsToPost.length === 0 && folded.length === 0;
+      const hasNothingNew = commentsToPost.length === 0 && folded.length === 0 && fixedFindings.length === 0;
       const previousDecision = await this.getLastReviewDecision(taskId);
       const skipPosting = shouldSkipReviewPosting({
         force: options?.force === true,
@@ -1078,21 +1114,94 @@ export class ReviewOrchestrator {
       await this.deps.stateStore.transition(taskId, "REVIEW_COMMENTING");
 
       if (!skipPosting) {
-        await withinDeadline(this.postReview(
-          taskId,
-          changeId,
-          reviewPatchset,
-          commentsToPost,
-          summary,
-          decision,
-          diff,
-          deadlineController.signal,
-        ));
+        if (hostedReview) {
+          if (this.deps.reviewProvider.postReviewOverview === undefined ||
+              result.changeOverview === undefined || result.requiredAction === undefined) {
+            throw new Error("Hosted review provider cannot publish a structured overview");
+          }
+          const expectedInlineHashes = new Set(commentsToPost.map(computeCommentHash));
+          const expectedFindingHashes = new Set(newComments.map(computeCommentHash));
+          const persistedFindingHashes = new Set<string>();
+          const publication = {
+            details,
+            summary: result.summary,
+            changeOverview: result.changeOverview,
+            requiredAction: result.requiredAction,
+            score: decision,
+            comments: commentsToPost,
+            folded,
+            previous: activePrior
+              .filter((comment) => assessmentById.get(comment.id)?.status === "still_present")
+              .map((comment) => ({
+                comment: { file: comment.file, line: comment.line, message: comment.message, severity: comment.severity },
+                url: comment.providerCommentUrl,
+              })),
+            reReview: task.reviewedPatchset !== null,
+            fixedCount: fixedFindings.length,
+            onPublicationCreated: async (remoteId: string): Promise<void> => {
+              reviewPublicationId = remoteId;
+              await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, {
+                status: "running",
+                modifiedFiles: [],
+                summary: result.summary,
+                agentLogs: rawOutput,
+                agentEvents: collectedEvents,
+                metadata: { reviewMode: true, patchset: reviewPatchset, reviewPublicationId: remoteId },
+              });
+            },
+            onFindingPosted: async (finding: import("../interfaces.js").PublishedReviewFinding): Promise<void> => {
+              const commentHash = computeCommentHash(finding.comment);
+              if (!expectedFindingHashes.has(commentHash)) {
+                throw new Error("Provider reported a published finding that was not requested");
+              }
+              if (finding.disposition === "inline" && !finding.url) {
+                throw new Error("Provider reported an inline finding without a comment link");
+              }
+              if (finding.disposition === "folded" && finding.url !== null) {
+                throw new Error("Provider reported a folded finding with an inline comment link");
+              }
+              if (persistedFindingHashes.has(commentHash)) return;
+              await this.deps.stateStore.markReviewCommentsPosted(taskId, changeId, [{
+                commentHash,
+                file: finding.comment.file,
+                line: finding.comment.line,
+                message: finding.comment.message,
+                severity: finding.comment.severity,
+                providerThreadId: finding.providerThreadId,
+                providerCommentUrl: finding.url,
+                disposition: finding.disposition,
+              }]);
+              persistedFindingHashes.add(commentHash);
+            },
+          };
+          const posted = await withinDeadline(this.deps.reviewProvider.postReviewOverview(
+            changeId, reviewPatchset, publication, deadlineController.signal,
+          ));
+          reviewPublicationId = posted.remoteId ?? reviewPublicationId;
+          const returnedInlineHashes = new Set(
+            posted.findings.map((finding) => computeCommentHash(finding.comment)),
+          );
+          if ([...expectedInlineHashes].some((hash) => !returnedInlineHashes.has(hash))) {
+            throw new Error("Provider omitted a published finding from the review overview");
+          }
+          for (const finding of posted.findings) {
+            await publication.onFindingPosted(finding);
+          }
+          for (const comment of folded) {
+            await publication.onFindingPosted({
+              comment, url: null, providerThreadId: null, disposition: "folded",
+            });
+          }
+        } else {
+          await withinDeadline(this.postReview(
+            taskId, changeId, reviewPatchset, commentsToPost, summary, decision, diff, deadlineController.signal,
+          ));
+        }
       }
 
       // Persist all newly-handled comment hashes (posted inline AND folded) so
       // future re-reviews skip them — avoiding both inline and summary spam.
-      if (newComments.length > 0) {
+      if (!hostedReview && newComments.length > 0) {
         await this.assertReviewStillActive(taskId);
         await this.deps.stateStore.markReviewCommentsPosted(
           taskId,
@@ -1106,7 +1215,6 @@ export class ReviewOrchestrator {
           })),
         );
       }
-
       // Post replies to human discussion threads (independent of the summary
       // gate). Each successfully-posted reply is recorded in the ledger so the
       // same human message is never answered twice across re-reviews.
@@ -1166,6 +1274,7 @@ export class ReviewOrchestrator {
           vote: decision,
           comments: result.comments,
           score: result.score,
+          ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}),
         },
       };
       await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, cycleResult);
@@ -1219,7 +1328,7 @@ export class ReviewOrchestrator {
           summary: message,
           agentLogs: "",
           agentEvents: collectedEvents,
-          metadata: { reviewMode: true, error: message, cancelled: true },
+          metadata: { reviewMode: true, error: message, cancelled: true, ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}) },
         }).catch((saveErr: unknown) =>
           log.warn({ err: saveErr, taskId }, "failed to save cancelled review cycle")
         );
@@ -1239,7 +1348,7 @@ export class ReviewOrchestrator {
         summary: message,
         agentLogs: workerOutput?.stdout ?? "",
         agentEvents: collectedEvents,
-        metadata: { reviewMode: true, error: message, ...(workerOutput !== undefined ? { workerOutput } : {}) },
+        metadata: { reviewMode: true, error: message, ...(reviewPublicationId !== undefined ? { reviewPublicationId } : {}), ...(workerOutput !== undefined ? { workerOutput } : {}) },
       };
       await this.deps.stateStore.saveAgentCycle(taskId, cycleNumber, failCycleResult).catch(
         (saveErr: unknown) => log.warn({ err: saveErr, taskId }, "failed to save review failure cycle")

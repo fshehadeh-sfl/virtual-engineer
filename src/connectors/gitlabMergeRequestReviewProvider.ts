@@ -1,9 +1,9 @@
 /**
  * GitLab Merge Request review provider.
  *
- * Implements the integration-agnostic `ReviewProvider` interface against the
- * GitLab REST API so VE can act as a reviewer on merge requests: read the diff,
- * post inline discussion comments, post a summary note, and approve / unapprove.
+ * Implements the integration-agnostic `ReviewProvider` interface against
+ * GitLab REST and GraphQL APIs: read diffs, post discussions and summaries,
+ * approve, or request changes.
  *
  * changeId formats supported:
  *  - `"group/project#42"`  project path + MR IID (preferred, mirrors GitHub)
@@ -21,6 +21,9 @@ import type {
   ReviewFileStatus,
   InlineReviewComment,
   ExternalChangeId,
+  ReviewOverviewPublication,
+  ReviewOverviewPublicationResult,
+  PublishedReviewFinding,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { GitLabHttpClient } from "./gitlabHttpClient.js";
@@ -28,6 +31,8 @@ import { ReviewApiError } from "../interfaces.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
 import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
 import { parsePatchNewLineNumbers } from "./githubReviewProvider.js";
+import { sanitizeErrorDetail } from "../utils/redactUrl.js";
+import { renderReviewOverview, type ReviewOverviewFinding } from "../review/reviewOverview.js";
 
 const log = getLogger("gitlab-mr-review-provider");
 
@@ -71,6 +76,27 @@ const MrChangesResponseSchema = z.object({
 });
 
 const ProjectSchema = z.object({ path_with_namespace: z.string() });
+
+const GraphqlResponseSchema = z.object({
+  data: z.unknown().nullable().optional(),
+  errors: z.array(z.object({ message: z.string() })).optional(),
+});
+
+const ReviewersSchema = z.object({
+  reviewers: z.object({
+    nodes: z.array(z.object({
+      id: z.string(),
+      mergeRequestInteraction: z.object({ reviewState: z.string().nullable() }).nullable(),
+    })),
+  }),
+});
+
+const MutationSchema = z.object({
+  errors: z.array(z.string()),
+  mergeRequest: ReviewersSchema.nullable(),
+});
+
+export type GitLabReviewDecisionOutcome = "requested_changes" | "advisory_only" | "other";
 
 const CurrentUserSchema = z.object({ id: z.number(), username: z.string() });
 
@@ -326,7 +352,20 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     allowedFiles?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<void> {
-    await this.submitReview(changeId, comments, summary, score, allowedFiles, signal);
+    await this.postReviewWithDecision(changeId, _revision, comments, summary, score, allowedFiles, signal);
+  }
+
+  /** Use this concrete method when callers need to distinguish blocking from advisory reviews. */
+  async postReviewWithDecision(
+    changeId: ExternalChangeId,
+    _revision: number,
+    comments: InlineReviewComment[],
+    summary: string,
+    score: -1 | 0 | 1,
+    allowedFiles?: ReadonlySet<string>,
+    signal?: AbortSignal,
+  ): Promise<GitLabReviewDecisionOutcome> {
+    return this.submitReview(changeId, comments, summary, score, allowedFiles, signal);
   }
 
   async vote(
@@ -337,6 +376,132 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     signal?: AbortSignal,
   ): Promise<void> {
     await this.submitReview(changeId, [], message ?? "", score < 0 ? -1 : score > 0 ? 1 : 0, undefined, signal);
+  }
+
+  async postReviewOverview(
+    changeId: ExternalChangeId,
+    _revision: number,
+    publication: ReviewOverviewPublication,
+    signal?: AbortSignal,
+  ): Promise<ReviewOverviewPublicationResult> {
+    const { project, iid } = this.parseChange(changeId);
+    let advisoryOnly = false;
+    if (publication.score === -1) {
+      if (await this.requestChanges(project, iid, signal) === "unsupported") {
+        await this.approve(project, iid, false, signal);
+        advisoryOnly = true;
+        log.warn({ project, iid }, "GitLab request changes unavailable; review overview is advisory only");
+      }
+    } else {
+      await this.removeOwnRequestedChanges(project, iid, signal);
+      if (publication.score === 1) await this.approve(project, iid, true, signal);
+    }
+
+    const inline: PublishedReviewFinding[] = [];
+    const folded: InlineReviewComment[] = [...publication.folded];
+    let refs: z.infer<typeof DiffRefsSchema> = null;
+    const validLinesByFile = new Map<string, Set<number>>();
+    if (publication.comments.some((comment) => comment.line > 0)) {
+      const changes = MrChangesResponseSchema.parse(await this.http.fetchJson(
+        `${this.mrUrl(project, iid)}/changes`,
+        signal !== undefined ? { signal } : undefined,
+      ));
+      refs = changes.diff_refs;
+      for (const change of changes.changes) {
+        validLinesByFile.set(change.new_path || change.old_path, parsePatchNewLineNumbers(change.diff));
+      }
+    }
+    for (const comment of publication.comments) {
+      if (comment.line <= 0 ||
+          typeof refs?.base_sha !== "string" ||
+          typeof refs.head_sha !== "string" ||
+          typeof refs.start_sha !== "string" ||
+          !validLinesByFile.get(comment.file)?.has(comment.line)) {
+        folded.push(comment);
+        continue;
+      }
+      let response: unknown;
+      try {
+        response = await this.http.fetchJson(`${this.mrUrl(project, iid)}/discussions`, {
+          method: "POST",
+          body: JSON.stringify({
+            body: comment.message,
+            position: {
+              base_sha: refs.base_sha,
+              head_sha: refs.head_sha,
+              start_sha: refs.start_sha,
+              position_type: "text",
+              new_path: comment.file,
+              new_line: comment.line,
+              old_path: comment.file,
+            },
+          }),
+          ...(signal !== undefined ? { signal } : {}),
+        });
+      } catch (err: unknown) {
+        if (signal?.aborted === true) throw signal.reason ?? err;
+        if (!(err instanceof ReviewApiError && (err.statusCode === 400 || err.statusCode === 422))) throw err;
+        log.warn({ project, iid, file: comment.file, line: comment.line, err }, "GitLab inline finding failed; folding into overview");
+        folded.push(comment);
+        continue;
+      }
+      const discussion = z.object({
+        id: z.string(),
+        notes: z.tuple([z.object({ id: z.number() })]).rest(z.object({ id: z.number() })),
+      }).parse(response);
+      const finding: PublishedReviewFinding = {
+        comment,
+        url: `${publication.details.url}#note_${discussion.notes[0].id}`,
+        providerThreadId: discussion.id,
+        disposition: "inline",
+      };
+      inline.push(finding);
+      await publication.onFindingPosted?.(finding);
+    }
+
+    const findings: ReviewOverviewFinding[] = [
+      ...inline.map((finding) => ({ comment: finding.comment, status: "new" as const, url: finding.url ?? undefined })),
+      ...folded.map((comment) => ({ comment, status: "new" as const })),
+      ...publication.previous.map((finding) => ({
+        comment: finding.comment,
+        status: "previous" as const,
+        url: finding.url ?? undefined,
+      })),
+    ];
+    const body = renderReviewOverview({
+      score: publication.score,
+      summary: publication.summary,
+      changeOverview: publication.changeOverview,
+      requiredAction: publication.requiredAction,
+      commitSha: publication.details.headSha,
+      kind: "gitlab",
+      advisoryOnly,
+      reReview: publication.reReview,
+      fixedCount: publication.fixedCount,
+      findings,
+    });
+    const note = z.object({ id: z.union([z.number(), z.string()]) }).parse(await this.http.fetchJson(
+      `${this.mrUrl(project, iid)}/notes`,
+      {
+        method: "POST",
+        body: JSON.stringify({ body }),
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    ));
+    const remoteId = String(note.id);
+    await publication.onPublicationCreated?.(remoteId);
+    const posted: PublishedReviewFinding[] = [...inline];
+    for (const comment of folded) {
+      const finding: PublishedReviewFinding = {
+        comment,
+        url: null,
+        providerThreadId: null,
+        disposition: "folded",
+      };
+      posted.push(finding);
+      await publication.onFindingPosted?.(finding);
+    }
+    return { findings: posted, remoteId, advisoryOnly };
   }
 
   /**
@@ -351,7 +516,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
     score: -1 | 0 | 1 | undefined,
     allowedFiles?: ReadonlySet<string>,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<GitLabReviewDecisionOutcome> {
     const { project, iid } = this.parseChange(changeId);
 
     const fileFiltered = filterCommentsByAllowedFiles(comments, allowedFiles, { project, iid });
@@ -443,13 +608,172 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
       });
     }
 
-    if (score === 1) await this.approve(project, iid, true, signal);
-    else if (score === -1) await this.approve(project, iid, false, signal);
+    let decision: GitLabReviewDecisionOutcome = "other";
+    if (score === -1) {
+      const native = await this.requestChanges(project, iid, signal);
+      if (native === "unsupported") {
+        await this.approve(project, iid, false, signal);
+        decision = "advisory_only";
+        log.warn({ project, iid, decision }, "GitLab native request changes unavailable; REST unapprove is advisory only and does not block merging");
+      } else {
+        decision = "requested_changes";
+      }
+    } else if (score !== undefined) {
+      await this.removeOwnRequestedChanges(project, iid, signal);
+      if (score === 1) await this.approve(project, iid, true, signal);
+    }
 
     log.info(
-      { project, iid, inlineCount: inline.length, foldedCount: outOfDiff.length, score },
+      { project, iid, inlineCount: inline.length, foldedCount: outOfDiff.length, score, decision },
       "posted GitLab MR review"
     );
+    return decision;
+  }
+
+  private async graphql(
+    query: string,
+    variables: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ data: unknown; errors: readonly string[] }> {
+    const url = `${this.config.baseUrl}/api/graphql`;
+    const response = GraphqlResponseSchema.parse(await this.http.fetchJson(url, {
+      method: "POST",
+      body: JSON.stringify({ query, variables }),
+      ...(signal !== undefined ? { signal } : {}),
+    }));
+    return {
+      data: response.data,
+      errors: response.errors?.map((error) => error.message) ?? [],
+    };
+  }
+
+  private unsupportedRequestChanges(errors: readonly string[]): boolean {
+    return errors.length > 0 && errors.every((error) =>
+      /(?:mergeRequestRequestChanges.*(?:doesn't exist|not (?:found|supported|available))|(?:request(?:ing|ed)? changes|review(?:er)? state).*(?:not (?:available|supported|enabled)|requires? (?:premium|ultimate)|(?:premium|ultimate|subscription|license|tier|plan)))/i.test(error)
+    );
+  }
+
+  private async graphqlProjectPath(project: string | number, signal?: AbortSignal): Promise<string> {
+    if (typeof project === "string" && project.includes("/")) return project;
+    const response = ProjectSchema.parse(await this.http.fetchJson(
+      `${this.config.baseUrl}/api/v4/projects/${this.projectRef(project)}`,
+      signal !== undefined ? { signal } : undefined,
+    ));
+    return response.path_with_namespace;
+  }
+
+  private async requestChanges(
+    project: string | number,
+    iid: number,
+    signal?: AbortSignal,
+  ): Promise<"requested_changes" | "unsupported"> {
+    const projectPath = await this.graphqlProjectPath(project, signal);
+    const url = `${this.config.baseUrl}/api/graphql`;
+    let response: Awaited<ReturnType<typeof this.graphql>>;
+    try {
+      response = await this.graphql(
+        "mutation($input: MergeRequestRequestChangesInput!) { mergeRequestRequestChanges(input: $input) { errors mergeRequest { reviewers(first: 100) { nodes { id mergeRequestInteraction { reviewState } } } } } }",
+        { input: { projectPath, iid: String(iid) } },
+        signal,
+      );
+    } catch (err: unknown) {
+      if (signal?.aborted === true) throw signal.reason ?? err;
+      if (err instanceof ReviewApiError && err.statusCode === 404) return "unsupported";
+      throw err;
+    }
+    if (this.unsupportedRequestChanges(response.errors)) return "unsupported";
+    if (response.errors.length > 0) throw new ReviewApiError(422, url, sanitizeErrorDetail(response.errors.join("; ")));
+    const result = z.object({ mergeRequestRequestChanges: MutationSchema }).parse(response.data).mergeRequestRequestChanges;
+    if (this.unsupportedRequestChanges(result.errors)) return "unsupported";
+    if (result.errors.length > 0) throw new ReviewApiError(422, url, sanitizeErrorDetail(result.errors.join("; ")));
+    if (result.mergeRequest === null) {
+      throw new ReviewApiError(422, url, "GitLab returned no merge request for native changes request");
+    }
+    const me = await this.resolveCurrentUser(signal);
+    if (me === null || this.ownReviewState(result.mergeRequest, `gid://gitlab/User/${me.id}`) !== "REQUESTED_CHANGES") {
+      throw new ReviewApiError(422, url, "GitLab did not confirm own REQUESTED_CHANGES reviewer state");
+    }
+    return "requested_changes";
+  }
+
+  private ownReviewState(
+    mergeRequest: z.infer<typeof ReviewersSchema> | null,
+    userId: string,
+  ): string | null | undefined {
+    const reviewer = mergeRequest?.reviewers.nodes.find((entry) => entry.id === userId);
+    if (reviewer === undefined) return undefined;
+    return reviewer.mergeRequestInteraction?.reviewState ?? null;
+  }
+
+  private unsupportedReviewStateSchema(errors: readonly string[]): boolean {
+    return errors.length > 0 && errors.every((error) =>
+      /^(?:Field ['"]reviewState['"] doesn't exist on type ['"]UserMergeRequestInteraction['"]|Field ['"]mergeRequestInteraction['"] doesn't exist on type ['"]MergeRequestReviewer['"]|Cannot query field ['"]reviewState['"] on type ['"]UserMergeRequestInteraction['"]|Cannot query field ['"]mergeRequestInteraction['"] on type ['"]MergeRequestReviewer['"])/i.test(error)
+    );
+  }
+
+  private async hasNoNativeChangesMutations(signal?: AbortSignal): Promise<boolean> {
+    // GitLab serves static introspection responses in production; omit required
+    // mutation inputs so validation proves field availability without execution.
+    const response = await this.graphql(
+      "mutation { mergeRequestRequestChanges { errors } mergeRequestDestroyRequestedChanges { errors } }",
+      {},
+      signal,
+    );
+    if (response.data != null) return false;
+    const missing = new Set<string>();
+    for (const error of response.errors) {
+      const field = /^(?:Field ['"](mergeRequestRequestChanges|mergeRequestDestroyRequestedChanges)['"] doesn't exist on type ['"]Mutation['"]|Cannot query field ['"](mergeRequestRequestChanges|mergeRequestDestroyRequestedChanges)['"] on type ['"]Mutation['"])/i.exec(error);
+      if (field === null) return false;
+      missing.add(field[1] ?? field[2] ?? "");
+    }
+    return missing.size === 2;
+  }
+
+  private async removeOwnRequestedChanges(
+    project: string | number,
+    iid: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const projectPath = await this.graphqlProjectPath(project, signal);
+    const url = `${this.config.baseUrl}/api/graphql`;
+    const response = await this.graphql(
+      "query($projectPath: ID!, $iid: String!) { currentUser { id } project(fullPath: $projectPath) { mergeRequest(iid: $iid) { reviewers(first: 100) { nodes { id mergeRequestInteraction { reviewState } } } } } }",
+      { projectPath, iid: String(iid) },
+      signal,
+    );
+    if (this.unsupportedReviewStateSchema(response.errors)) {
+      if (await this.hasNoNativeChangesMutations(signal)) {
+        log.warn({ project, iid }, "GitLab native reviewer-state and request-changes mutations absent; skipping changes-request cleanup");
+        return;
+      }
+      throw new ReviewApiError(422, url, "Cannot confirm own requested changes: native mutation schema exists");
+    }
+    if (response.errors.length > 0) throw new ReviewApiError(422, url, sanitizeErrorDetail(response.errors.join("; ")));
+    const data = z.object({
+      currentUser: z.object({ id: z.string() }).nullable(),
+      project: z.object({ mergeRequest: ReviewersSchema.nullable() }).nullable(),
+    }).parse(response.data);
+    const currentUserId = data.currentUser?.id;
+    const ownState = currentUserId === undefined
+      ? undefined
+      : this.ownReviewState(data.project?.mergeRequest ?? null, currentUserId);
+    if (currentUserId === undefined || ownState === undefined) {
+      throw new ReviewApiError(422, url, "Cannot determine own GitLab MR review state");
+    }
+    if (ownState !== "REQUESTED_CHANGES") return;
+
+    const removed = await this.graphql(
+      "mutation($input: MergeRequestDestroyRequestedChangesInput!) { mergeRequestDestroyRequestedChanges(input: $input) { errors mergeRequest { reviewers(first: 100) { nodes { id mergeRequestInteraction { reviewState } } } } } }",
+      { input: { projectPath, iid: String(iid) } },
+      signal,
+    );
+    if (removed.errors.length > 0) throw new ReviewApiError(422, url, sanitizeErrorDetail(removed.errors.join("; ")));
+    const result = z.object({ mergeRequestDestroyRequestedChanges: MutationSchema }).parse(removed.data).mergeRequestDestroyRequestedChanges;
+    if (result.errors.length > 0) throw new ReviewApiError(422, url, sanitizeErrorDetail(result.errors.join("; ")));
+    const clearedState = this.ownReviewState(result.mergeRequest, currentUserId);
+    if (clearedState === undefined || clearedState === "REQUESTED_CHANGES") {
+      throw new ReviewApiError(422, url, "GitLab did not confirm removal of own requested changes");
+    }
   }
 
   /** Approve (or unapprove) the MR. Best-effort: approval may be unavailable on the GitLab tier. */

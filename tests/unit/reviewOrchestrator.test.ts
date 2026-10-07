@@ -129,6 +129,25 @@ const GOOD_RAW_OUTPUT = [
   "REVIEW_RESULT_END",
 ].join("\n");
 
+function hostedOutput(
+  comments: Array<{ file: string; line: number; message: string; severity: string }>,
+  assessments: Array<{ findingId: number; status: string; evidence: string }> = [],
+): string {
+  return [
+    "REVIEW_RESULT_START",
+    JSON.stringify({
+      comments,
+      summary: "Review summary",
+      changeOverview: "Adds validation to the request path.",
+      requiredAction: "Guard missing input.",
+      priorFindingAssessments: assessments,
+      reviewAction: "REQUEST_CHANGES",
+      replies: [],
+    }),
+    "REVIEW_RESULT_END",
+  ].join("\n");
+}
+
 function makeWorkspaceRunner(rawOutput = GOOD_RAW_OUTPUT) {
   const handle = {
     taskId: makeTaskId("review-42-abcd"),
@@ -966,6 +985,259 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       .calls[0]?.[2] as unknown[];
     expect(secondPosted).toEqual([]);
     expect(posted.size).toBe(1);
+  });
+
+  it("publishes a hosted overview with linked findings and records only submitted comments", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([
+      { file: "src/a.ts", line: 1, message: "Bug", severity: "error" },
+      { file: "src/a.ts", line: 0, message: "File-level note", severity: "info" },
+    ]));
+    const postReviewOverview = vi.fn(async (_id, _revision, publication) => {
+      await publication.onPublicationCreated?.("review-123");
+      await publication.onFindingPosted?.({
+        comment: publication.comments[0],
+        url: "https://github.com/org/repo/pull/2#discussion_r42",
+        providerThreadId: "42",
+        disposition: "inline",
+      });
+      return {
+        remoteId: "review-123",
+        advisoryOnly: false,
+        findings: [{
+          comment: publication.comments[0],
+          url: "https://github.com/org/repo/pull/2#discussion_r42",
+          providerThreadId: "42",
+          disposition: "inline" as const,
+        }],
+      };
+    });
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(postReviewOverview).toHaveBeenCalledWith(CHANGE_ID, 2, expect.objectContaining({
+      changeOverview: "Adds validation to the request path.",
+      requiredAction: "Guard missing input.",
+      comments: expect.arrayContaining([expect.objectContaining({ message: "Bug" })]),
+      folded: expect.arrayContaining([expect.objectContaining({ message: "File-level note" })]),
+    }), expect.any(AbortSignal));
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).toHaveBeenCalledWith(
+      initial.taskId, CHANGE_ID, [expect.objectContaining({
+        providerCommentUrl: "https://github.com/org/repo/pull/2#discussion_r42",
+        providerThreadId: "42",
+        disposition: "inline",
+      })],
+    );
+    expect(mocks.store.markReviewCommentsPosted).toHaveBeenCalledTimes(2);
+    expect(mocks.store.saveAgentCycle).toHaveBeenCalledWith(
+      initial.taskId, 1, expect.objectContaining({
+        status: "running",
+        metadata: expect.objectContaining({ reviewPublicationId: "review-123" }),
+      }),
+    );
+  });
+
+  it("reassesses only active hosted findings and verifies every assessment before posting", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([], [
+      { findingId: 17, status: "still_present", evidence: "The guard is still absent." },
+      { findingId: 18, status: "fixed", evidence: "A guard was added." },
+      { findingId: 19, status: "uncertain", evidence: "The behavior is unclear." },
+    ]));
+    const previous = [17, 18, 19].map((id) => ({
+      id, resolved: false, file: "src/a.ts", line: 1,
+      message: `Prior ${id}`, severity: "error", providerCommentUrl: `https://example.test/${id}`,
+    }));
+    mocks.store.getPostedReviewComments.mockResolvedValue(previous);
+    mocks.store.markReviewCommentResolved = vi.fn(async () => undefined);
+    const postReviewOverview = vi.fn(async () => ({
+      findings: [], remoteId: "123", advisoryOnly: false,
+    }));
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    const prompt = runner.runReviewInDocker.mock.calls[0]?.[1].prompt as string;
+    expect(prompt).toContain("findingId: 17");
+    expect(prompt).toContain("findingId: 19");
+    expect(postReviewOverview).toHaveBeenCalledWith(CHANGE_ID, 2, expect.objectContaining({
+      previous: [expect.objectContaining({ comment: expect.objectContaining({ message: "Prior 17" }) })],
+      fixedCount: 1,
+    }), expect.any(AbortSignal));
+    expect(mocks.store.markReviewCommentResolved).toHaveBeenCalledWith(18);
+    expect(mocks.store.markReviewCommentResolved).not.toHaveBeenCalledWith(19);
+  });
+
+  it("rejects missing or invented hosted finding assessments before posting or resolving", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([], [
+      { findingId: 999, status: "fixed", evidence: "Claimed fixed." },
+    ]));
+    mocks.store.getPostedReviewComments.mockResolvedValue([{
+      id: 17, resolved: false, file: "src/a.ts", line: 1,
+      message: "Prior", severity: "error", providerCommentUrl: null,
+    }]);
+    mocks.store.markReviewCommentResolved = vi.fn(async () => undefined);
+    const postReviewOverview = vi.fn();
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow(/finding assessment/i);
+    expect(postReviewOverview).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentResolved).not.toHaveBeenCalled();
+  });
+
+  it("retains remote publication identity and already posted findings when hosting fails midway", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([
+      { file: "src/a.ts", line: 1, message: "Bug", severity: "error" },
+    ]));
+    const failure = new Error("submission failed");
+    mocks.provider = {
+      ...mocks.provider,
+      kind: "github",
+      postReviewOverview: vi.fn(async (_id, _revision, publication) => {
+        await publication.onPublicationCreated?.("pending-review-456");
+        await publication.onFindingPosted?.({
+          comment: publication.comments[0],
+          url: "https://example.test/discussion/1",
+          providerThreadId: "1",
+          disposition: "inline",
+        });
+        throw failure;
+      }),
+    };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow("submission failed");
+    expect(mocks.store.markReviewCommentsPosted).toHaveBeenCalledOnce();
+    expect(mocks.store.saveAgentCycle).toHaveBeenLastCalledWith(initial.taskId, 1, expect.objectContaining({
+      status: "failed",
+      metadata: expect.objectContaining({ reviewPublicationId: "pending-review-456" }),
+    }));
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+  });
+
+  it("does not silently treat omitted inline findings as published", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([
+      { file: "src/a.ts", line: 1, message: "Bug", severity: "error" },
+    ]));
+    mocks.provider = {
+      ...mocks.provider,
+      kind: "github",
+      postReviewOverview: vi.fn(async () => ({
+        findings: [], remoteId: "submitted-9", advisoryOnly: false,
+      })),
+    };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow(/published finding/i);
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+    expect(mocks.store.setReviewedPatchset).not.toHaveBeenCalled();
+  });
+
+  it("rejects a provider claiming inline publication without a comment link", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([
+      { file: "src/a.ts", line: 1, message: "Bug", severity: "error" },
+    ]));
+    const postReviewOverview = vi.fn(async (_id, _revision, publication) => ({
+      findings: [{
+        comment: publication.comments[0], url: null,
+        providerThreadId: "123", disposition: "inline" as const,
+      }],
+      remoteId: "123",
+      advisoryOnly: false,
+    }));
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow(/inline.*link/i);
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative hosted verdict without an actionable before-approval step", async () => {
+    const initial = makeTask({ state: "REVIEW_PENDING" });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([]).replace(
+      '"requiredAction":"Guard missing input."', '"requiredAction":"   "',
+    ));
+    const postReviewOverview = vi.fn();
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow(/before approval/i);
+    expect(postReviewOverview).not.toHaveBeenCalled();
+  });
+
+  it("permits a previously fixed finding to be published again when it regresses", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const recurring = { file: "src/a.ts", line: 1, message: "Bug", severity: "error" };
+    const { runner } = makeWorkspaceRunner(hostedOutput([recurring], [
+      { findingId: 23, status: "fixed", evidence: "Original path now validates input." },
+    ]));
+    mocks.store.getPostedReviewComments.mockResolvedValue([{
+      id: 23, resolved: false, ...recurring,
+      providerCommentUrl: "https://example.test/old",
+      commentHash: computeCommentHash(recurring),
+    }]);
+    mocks.store.getPostedReviewCommentHashes.mockResolvedValue(new Set([computeCommentHash(recurring)]));
+    mocks.store.markReviewCommentResolved = vi.fn(async () => undefined);
+    const postReviewOverview = vi.fn(async (_id, _revision, publication) => ({
+      findings: [{
+        comment: publication.comments[0],
+        url: "https://example.test/new",
+        providerThreadId: "new",
+        disposition: "inline" as const,
+      }],
+      remoteId: "new",
+      advisoryOnly: false,
+    }));
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(postReviewOverview).toHaveBeenCalledWith(CHANGE_ID, 2,
+      expect.objectContaining({ comments: [expect.objectContaining(recurring)] }),
+      expect.any(AbortSignal));
+    const resolvedOrder = mocks.store.markReviewCommentResolved.mock.invocationCallOrder[0] as number;
+    const postedOrder = postReviewOverview.mock.invocationCallOrder[0] as number;
+    expect(resolvedOrder).toBeLessThan(postedOrder);
+  });
+
+  it("does not re-post an unchanged hosted verdict or inline finding on re-review", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const recurring = { file: "src/a.ts", line: 1, message: "Bug", severity: "error" };
+    const { runner } = makeWorkspaceRunner(hostedOutput([recurring], [
+      { findingId: 23, status: "still_present", evidence: "The bad path is unchanged." },
+    ]));
+    mocks.store.getPostedReviewComments.mockResolvedValue([{
+      id: 23, resolved: false, ...recurring,
+      providerCommentUrl: "https://example.test/old",
+      commentHash: computeCommentHash(recurring),
+    }]);
+    mocks.store.getPostedReviewCommentHashes.mockResolvedValue(new Set([computeCommentHash(recurring)]));
+    const postReviewOverview = vi.fn();
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+    mocks.store.getAgentCycles.mockResolvedValue([
+      { result: { metadata: { vote: -1 } } },
+    ]);
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(postReviewOverview).not.toHaveBeenCalled();
+    expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
   });
 
   it("does not re-post summary or vote on a re-review when nothing is new and the verdict is unchanged", async () => {
@@ -2402,6 +2674,7 @@ describe("ReviewOrchestrator.recoverReview", () => {
       currentPatchset: 2,
       reviewedPatchset: null,
     });
+
     const mocks = makeMocks(initial);
     const { runner } = makeWorkspaceRunner();
     const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
@@ -2416,6 +2689,23 @@ describe("ReviewOrchestrator.recoverReview", () => {
       expect.stringContaining("interrupted during provider posting")
     );
     expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+  });
+
+  it("includes the pending remote review ID when recovery needs a controlled retry", async () => {
+    const initial = makeTask({ state: "REVIEW_COMMENTING", cycleCount: 2 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    mocks.store.getAgentCycles.mockResolvedValue([{
+      cycleNumber: 2,
+      result: { status: "running", metadata: { reviewMode: true, reviewPublicationId: "456" } },
+    }]);
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).recoverReview(initial.taskId);
+
+    expect(mocks.store.setFailureReason).toHaveBeenCalledWith(
+      initial.taskId, expect.stringContaining("456"),
+    );
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
   });
 
   it("finalizes a COMMENTING cycle archived because the change closed", async () => {
