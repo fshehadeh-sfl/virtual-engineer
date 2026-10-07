@@ -433,7 +433,11 @@ export function ProjectDrawer({ item, detail, agents, onClose, onEdit, onToggle,
           <DetailRow k="Full ticket URL in commits">{yesNo(detail.useFullTicketUrlInCommits)}</DetailRow>
           <DetailRow k="Post-clone script">{detail.postCloneScript?.trim() ? "configured" : undefined}</DetailRow>
           <DetailRow k="Skill sources">
-            {skillSources.length > 0 ? `${plural(skillSources.length, "source")} · ${plural(skillCount, "skill")}` : undefined}
+            {skillSources.length > 0
+              ? `${plural(skillSources.length, "source")} · ${skillSources.some((source) => source.installAll)
+                ? "all skills"
+                : plural(skillCount, "skill")}`
+              : undefined}
           </DetailRow>
         </DetailSection>
       )}

@@ -262,7 +262,7 @@ export interface ApiProjectDetail extends ApiProject {
     assignmentMode?: "manual" | "automatic";
   } | null;
   pushTargets?: Array<{
-    integrationId: string;
+    integrationId: string | null;
     repoKey: string;
     cloneUrl: string;
     targetBranch: string;

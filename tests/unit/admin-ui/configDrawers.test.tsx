@@ -173,4 +173,18 @@ describe("Config drawers", () => {
     expect(rowValue("Repositories")).toBe("org/a, org/b");
     expect(rowValue("Assignment")).toBe("automatic");
   });
+
+  it("labels install-all skill sources without claiming zero skills", () => {
+    const project: ApiProject = {
+      id: "proj-skills", name: "Skills", type: "coding", enabled: true, agentId: null,
+      createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-02T00:00:00Z",
+    };
+    render(<ProjectDrawer
+      item={project}
+      detail={{ ...project, skillSources: [{ source: "skills.git", skills: [], installAll: true }] }}
+      agents={[]}
+      onClose={() => undefined}
+    />);
+    expect(rowValue("Skill sources")).toBe("1 source · all skills");
+  });
 });

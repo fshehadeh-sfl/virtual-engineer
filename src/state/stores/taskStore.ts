@@ -9,6 +9,7 @@ import type {
   CycleCost,
   ExternalChangeId,
   ProjectId,
+  ReviewVoteCounts,
   StateTransition,
   Task,
   TaskId,
@@ -89,6 +90,7 @@ export interface TaskStoreApi {
     validationResult?: ValidationResult
   ): Promise<void>;
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
+  getReviewVoteCounts(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
   getStateTransitions(taskId: TaskId): Promise<StateTransition[]>;
   getFailedAttemptCount(ticketId: TicketId, ticketSourceLabel?: string, projectId?: ProjectId): Promise<number>;
@@ -610,6 +612,42 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
         createdAt: row.createdAt,
         ...(cost ? { cost } : {}),
       };
+    });
+  }
+
+  function getReviewVoteCounts(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts> {
+    return Promise.resolve().then(() => {
+      const votes: ReviewVoteCounts = { plus2: 0, plus1: 0, minus1: 0, minus2: 0 };
+      if (taskIds.length === 0) return votes;
+      // Reserve a SQLite parameter for the optional cutoff, even on older 999-variable builds.
+      const batchSize = 900;
+      for (let offset = 0; offset < taskIds.length; offset += batchSize) {
+        const batch = taskIds.slice(offset, offset + batchSize);
+        const placeholders = batch.map(() => "?").join(", ");
+        const cutoff = since === undefined ? "" : "AND ac.created_at > ?";
+        const counts = raw.prepare(`
+          WITH scored AS (
+            SELECT CASE WHEN json_valid(ac.agent_result) THEN
+              CASE WHEN json_type(ac.agent_result, '$.metadata.score') IN ('integer', 'real')
+                THEN json_extract(ac.agent_result, '$.metadata.score') END
+            END AS score
+            FROM agent_cycles ac
+            JOIN tasks t ON t.task_id = ac.task_id AND t.task_type = 'code-review'
+            WHERE ac.task_id IN (${placeholders}) ${cutoff}
+          )
+          SELECT
+            count(CASE WHEN score >= 2 THEN 1 END) AS plus2,
+            count(CASE WHEN score = 1 THEN 1 END) AS plus1,
+            count(CASE WHEN score = -1 THEN 1 END) AS minus1,
+            count(CASE WHEN score <= -2 THEN 1 END) AS minus2
+          FROM scored
+        `).get(...batch, ...(since === undefined ? [] : [Math.floor(since.getTime() / 1000)])) as ReviewVoteCounts;
+        votes.plus2 += counts.plus2;
+        votes.plus1 += counts.plus1;
+        votes.minus1 += counts.minus1;
+        votes.minus2 += counts.minus2;
+      }
+      return votes;
     });
   }
 
@@ -1221,6 +1259,7 @@ export function createTaskStore(context: TaskStoreContext): TaskStoreApi {
     setFailureReason,
     saveAgentCycle,
     getAgentCycles,
+    getReviewVoteCounts,
     getAgentCycleEvents,
     getStateTransitions,
     getFailedAttemptCount,

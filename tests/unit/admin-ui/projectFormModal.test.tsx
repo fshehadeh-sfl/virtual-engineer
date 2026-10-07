@@ -65,8 +65,11 @@ describe("ProjectFormModal repository integration resolution", () => {
     try {
       render(
         <ProjectFormModal
-          agents={[codingAgent]}
-          integrations={[]}
+          agents={[{ ...codingAgent, integrationId: "copilot-1" }]}
+          integrations={[{
+            id: "copilot-1", name: "Copilot", provider: "copilot", enabled: true,
+            capabilities: [], domainCapabilities: ["agent_execution"],
+          }]}
           onClose={vi.fn()}
           onSaved={vi.fn()}
         />,
@@ -1206,7 +1209,7 @@ describe("ProjectFormModal repository integration resolution", () => {
       };
     }
 
-    it("reveals the ticket project key and ticket options after choosing a ticket source, clearing the key on change", async () => {
+    it("reveals the ticket project key and ticket options after choosing a ticket source, clearing them on change", async () => {
       vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "offline" }), {
         status: 502, headers: { "content-type": "application/json" },
       })));
@@ -1222,9 +1225,16 @@ describe("ProjectFormModal repository integration resolution", () => {
       fireEvent.change(key, { target: { value: "ABC" } });
       expect(screen.getByText("Ticket URL in Commits")).toBeTruthy();
       expect(screen.getByText("Post Review Link to Ticket")).toBeTruthy();
+      fireEvent.click(screen.getByLabelText("Include full ticket URL in commit message footers"));
+      fireEvent.click(screen.getByLabelText("Post a ticket comment with the review link(s)"));
 
       fireEvent.change(ticketing, { target: { value: "t2" } });
       expect(await screen.findByPlaceholderText("PROJECT_KEY")).toHaveProperty("value", "");
+      expect(screen.getByLabelText("Include full ticket URL in commit message footers")).toHaveProperty("checked", false);
+      expect(screen.getByLabelText("Post a ticket comment with the review link(s)")).toHaveProperty("checked", false);
+      fireEvent.change(ticketing, { target: { value: "" } });
+      expect(screen.queryByText("Ticket URL in Commits")).toBeNull();
+      expect(screen.queryByText("Post Review Link to Ticket")).toBeNull();
     });
 
     it("reveals repository, branch, and Gerrit topic fields step by step and resets them on integration change", async () => {
@@ -1298,6 +1308,57 @@ describe("ProjectFormModal repository integration resolution", () => {
       expect(screen.queryByText("Additional Skills")).toBeNull();
       fireEvent.change(agent, { target: { value: "claude-agent" } });
       expect(screen.getByText("Additional Skills")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+      fireEvent.change(agent, { target: { value: "aider-agent" } });
+      expect(screen.queryByText("Additional Skills")).toBeNull();
+      fireEvent.change(agent, { target: { value: "claude-agent" } });
+      expect(screen.queryByText("Source", { selector: "label" })).toBeNull();
+    });
+
+    it("hydrates missing integration IDs and preserves saved dependent values on initial edit", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ components: [] }), {
+        status: 200, headers: { "content-type": "application/json" },
+      })));
+      render(<ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[]}
+        project={{
+          id: "legacy", name: "Legacy", type: "coding", agentId: codingAgent.id,
+          skillSources: [{ source: "skills.git", skills: [], installAll: true }],
+          ticketSource: { integration: null, ticketProjectKey: "OLD" },
+          useFullTicketUrlInCommits: true, postReviewLinkToTicket: true,
+          gerritTopicOverride: "legacy-topic",
+          pushTargets: [{
+            integrationId: null, repoKey: "old/repo", cloneUrl: "https://example.com/repo.git",
+            targetBranch: "main", role: "primary", commitOrder: 0, localPath: ".",
+          }],
+        }}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />);
+      await waitFor(() => expect(screen.getByLabelText(/VCS Integration/)).toHaveProperty("value", ""));
+      expect(screen.getByText("Additional Skills")).toBeTruthy();
+      expect(screen.getByLabelText("Custom Gerrit Topic")).toHaveProperty("value", "legacy-topic");
+      expect(screen.getByLabelText("Include full ticket URL in commit message footers")).toHaveProperty("checked", true);
+      expect(screen.getByLabelText("Post a ticket comment with the review link(s)")).toHaveProperty("checked", true);
+    });
+
+    it("hides and clears the topic after the last Gerrit push target is changed or removed", () => {
+      const gerrit = gerritIntegration("gerrit-1", "Gerrit");
+      const gitlab: ApiIntegration = { ...gerrit, id: "gitlab-1", name: "GitLab", provider: "gitlab" };
+      render(<ProjectFormModal agents={[codingAgent]} integrations={[gerrit, gitlab]} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const vcs = screen.getByLabelText(/VCS Integration/);
+      fireEvent.change(vcs, { target: { value: gerrit.id } });
+      fireEvent.change(screen.getByLabelText("Custom Gerrit Topic"), { target: { value: "topic" } });
+      fireEvent.change(vcs, { target: { value: gitlab.id } });
+      expect(screen.queryByText("Custom Gerrit Topic")).toBeNull();
+      fireEvent.change(vcs, { target: { value: gerrit.id } });
+      expect(screen.getByLabelText("Custom Gerrit Topic")).toHaveProperty("value", "");
+      fireEvent.change(screen.getByLabelText("Custom Gerrit Topic"), { target: { value: "again" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add repository" }));
+      const firstCard = screen.getByText("Repository #1").parentElement?.parentElement;
+      fireEvent.click(within(firstCard!).getByRole("button", { name: "" }));
+      expect(screen.queryByText("Custom Gerrit Topic")).toBeNull();
     });
   });
 });

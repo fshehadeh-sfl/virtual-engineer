@@ -62,7 +62,7 @@ interface ProjectFormProject {
     assignmentMode?: ReviewAssignmentMode;
   } | null;
   pushTargets?: Array<{
-    integrationId: string;
+    integrationId: string | null;
     repoKey: string;
     cloneUrl: string;
     targetBranch: string;
@@ -198,7 +198,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         ticketProjectKey: project.ticketSource?.ticketProjectKey ?? "",
       });
       const nextTargets = (project.pushTargets ?? []).map((t) => ({
-        integrationId: t.integrationId,
+        integrationId: t.integrationId ?? "",
         repoKey: t.repoKey,
         cloneUrl: t.cloneUrl,
         targetBranch: t.targetBranch,
@@ -258,13 +258,18 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
 
   const selectedAgent = agents.find((agent) => agent.id === agentId);
   const selectedAgentProvider = selectedAgent?.integrationId ? integrationProvider(selectedAgent.integrationId) : undefined;
-  const showSkillSources = skillSourceRows.length > 0
-    || (selectedAgent !== undefined && (selectedAgentProvider === undefined || supportsSkillSources(selectedAgentProvider)));
-  const showGerritTopic = gerritTopicOverride.trim() !== ""
+  const showSkillSources = (isEditMode && agentId === (project.agentId ?? "") && skillSourceRows.length > 0)
+    || (selectedAgentProvider !== undefined && supportsSkillSources(selectedAgentProvider));
+  const showGerritTopic = (isEditMode && gerritTopicOverride.trim() !== "")
     || pushTargets.some((target) => integrationProvider(target.integrationId) === "gerrit");
   const hasTicketSource = ticketSource.integrationId !== "";
 
   const updatePushTargetIntegration = (idx: number, integrationId: string) => {
+    if (!pushTargets.some((target, targetIndex) =>
+      targetIndex === idx
+        ? integrationProvider(integrationId) === "gerrit"
+        : integrationProvider(target.integrationId) === "gerrit"
+    )) setGerritTopicOverride("");
     setPushTargets((prev) => prev.map((target, targetIndex) => {
       if (targetIndex !== idx || target.integrationId === integrationId) return target;
       if (!target.integrationId) return { ...target, integrationId };
@@ -308,6 +313,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   };
 
   const removePushTarget = (idx: number) => {
+    if (!pushTargets.some((target, targetIndex) =>
+      targetIndex !== idx && integrationProvider(target.integrationId) === "gerrit"
+    )) setGerritTopicOverride("");
     setPushTargets((prev) => prev.filter((_, i) => i !== idx));
   };
 
@@ -480,7 +488,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillSources,
-          gerritTopicOverride: gerritTopicOverride.trim() || null,
+          gerritTopicOverride: showGerritTopic ? gerritTopicOverride.trim() || null : null,
           useFullTicketUrlInCommits,
           postReviewLinkToTicket,
           reactToCiFailures,
@@ -567,7 +575,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         </Field>
 
         <Field label="Agent" required hint={`Select an enabled ${projectType} agent`}>
-          <FieldSelect data-tour="project-form-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <FieldSelect data-tour="project-form-agent" value={agentId} onChange={(e) => {
+            if (e.target.value !== agentId) setSkillSourceRows([]);
+            setAgentId(e.target.value);
+          }}>
             {currentAgents.length === 0 && <option value="">— no {projectType} agents —</option>}
             {currentAgents.length > 0 && <option value="">— select —</option>}
             {currentAgents.map((a) => (
@@ -582,7 +593,11 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 12 }}>Ticket Source</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
                 <Field label="Ticketing Integration" required>
-                  <FieldSelect value={ticketSource.integrationId} onChange={(e) => setTicketSource({ integrationId: e.target.value, ticketProjectKey: "" })}>
+                  <FieldSelect value={ticketSource.integrationId} onChange={(e) => {
+                    setTicketSource({ integrationId: e.target.value, ticketProjectKey: "" });
+                    setUseFullTicketUrlInCommits(false);
+                    setPostReviewLinkToTicket(false);
+                  }}>
                     {ticketingIntegrations.length === 0 && <option value="">— no ticketing integrations —</option>}
                     {ticketingIntegrations.length > 0 && <option value="">— select —</option>}
                     {ticketingIntegrations.map((i) => (

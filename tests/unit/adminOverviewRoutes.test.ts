@@ -186,4 +186,20 @@ describe("Admin API — Review votes period filter", () => {
     expect(r.status).toBe(200);
     expect(r.body).toEqual(expected);
   });
+
+  it("uses the aggregate store for readable review tasks instead of loading each cycle", async () => {
+    const tasks = [
+      makeTask("review", "REVIEW_DONE", new Date(NOW)),
+      makeTask("coding", "DONE", new Date(NOW)),
+    ];
+    const deps = makeDeps(tasks);
+    const aggregate = vi.fn(async () => ({ plus2: 2, plus1: 0, minus1: 0, minus2: 0 }));
+    deps.stateStore.getReviewVoteCounts = aggregate;
+    server = createAdminServer(deps);
+    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
+    const r = await rest(server, "/api/admin/review-votes?days=1");
+    expect(r.body).toEqual({ plus2: 2, plus1: 0, minus1: 0, minus2: 0 });
+    expect(aggregate).toHaveBeenCalledWith([makeTaskId("review")], expect.any(Date));
+    expect(deps.stateStore.getAgentCycles).not.toHaveBeenCalled();
+  });
 });
