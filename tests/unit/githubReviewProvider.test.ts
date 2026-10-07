@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitHubReviewProvider, parsePatchNewLineNumbers } from "../../src/connectors/githubReviewProvider.js";
-import type { ExternalChangeId, ReviewChangeDetails } from "../../src/interfaces.js";
+import type { ExternalChangeId, ReviewChangeDetails, ReviewOverviewPublication, PublishedReviewFinding } from "../../src/interfaces.js";
 import { patchsetFromRevisionSha } from "../../src/review/revisionPatchset.js";
 
 const fetchMock = vi.fn();
@@ -19,12 +19,389 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const cid = "42" as unknown as ExternalChangeId;
+const headSha = "a".repeat(40);
+const pr = {
+  number: 42, state: "open", title: "Feature",
+  html_url: "https://github.com/octocat/hello-world/pull/42",
+  merged: false,
+  base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+  head: { ref: "feature", sha: headSha },
+};
+const finding = { file: "src/a.ts", line: 2, message: "Fix this", severity: "error" };
+
+function publication(overrides: Partial<ReviewOverviewPublication> = {}): ReviewOverviewPublication {
+  return {
+    details: {
+      changeId: cid, changeNumber: 42, subject: "Feature", description: "",
+      ownerAccountId: "123", currentPatchset: 1, headSha, status: "OPEN",
+      project: "octocat/hello-world", targetBranch: "main", url: pr.html_url,
+    },
+    summary: "Review summary", changeOverview: "New feature", requiredAction: "Fix this",
+    score: -1, comments: [finding], folded: [], previous: [], reReview: false,
+    ...overrides,
+  };
+}
+
+const fileResponse = [{ filename: "src/a.ts", status: "modified", patch: "@@ -1,3 +1,3 @@\n line1\n line2\n line3" }];
+const postedComment = (id: number, body = finding.message, line = 2): unknown => ({
+  id, body, path: "src/a.ts", line,
+  html_url: `${pr.html_url}#discussion_r${id}`,
+});
 
 beforeEach(() => {
   fetchMock.mockReset();
 });
 
 describe("GitHubReviewProvider", () => {
+  describe("postReviewOverview", () => {
+    it("finds and links an inline comment in the second files page", async () => {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        filename: `src/other-${index}.ts`, status: "modified", patch: "@@ -1 +1 @@\n+one",
+      }));
+      const controller = new AbortController();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(firstPage))
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }));
+
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication(), controller.signal,
+      );
+
+      expect(fetchMock.mock.calls.slice(0, 2).map((call) => call[0])).toEqual([
+        "https://api.github.com/repos/octocat/hello-world/pulls/42/files?per_page=100&page=1",
+        "https://api.github.com/repos/octocat/hello-world/pulls/42/files?per_page=100&page=2",
+      ]);
+      expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).toBe(controller.signal);
+      const pending = JSON.parse((fetchMock.mock.calls[2]?.[1] as RequestInit).body as string);
+      expect(pending.comments).toEqual([{ path: finding.file, line: finding.line, body: finding.message, side: "RIGHT" }]);
+      expect(result.findings[0]?.url).toBe(`${pr.html_url}#discussion_r91`);
+    });
+
+    it("refuses to create a draft if file-list completeness cannot be established at the 3,000-file cap", async () => {
+      const page = Array.from({ length: 100 }, (_, index) => ({
+        filename: `src/changed-${index}.ts`, status: "modified", patch: "@@ -1 +1 @@\n+one",
+      }));
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(page)));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(cid, 1, publication()))
+        .rejects.toThrow(/3,000.*complete/i);
+      expect(fetchMock).toHaveBeenCalledTimes(30);
+      expect(fetchMock.mock.calls[29]?.[0]).toBe(
+        "https://api.github.com/repos/octocat/hello-world/pulls/42/files?per_page=100&page=30",
+      );
+    });
+
+    it("links actual pending comments, folds unanchorable findings, and submits only on the reviewed head", async () => {
+      const created = vi.fn(async () => {
+        expect(fetchMock.mock.calls.map((call) => call[0])).toHaveLength(2);
+      });
+      const posted = vi.fn(async (_finding: PublishedReviewFinding) => {
+        expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(
+          "https://api.github.com/repos/octocat/hello-world/pulls/42/reviews/7/events",
+        );
+      });
+      const extra = { file: "src/a.ts", line: 99, message: "Outside hunk", severity: "warning" };
+      const folded = { file: "src/a.ts", line: 0, message: "File note", severity: "suggestion" };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }));
+
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [finding, extra, folded], folded: [folded], onPublicationCreated: created, onFindingPosted: posted }),
+      );
+
+      expect(result).toEqual({
+        remoteId: "7", advisoryOnly: false,
+        findings: [
+          { comment: finding, url: `${pr.html_url}#discussion_r91`, providerThreadId: "91", disposition: "inline" },
+          { comment: extra, url: null, providerThreadId: null, disposition: "folded" },
+          { comment: folded, url: null, providerThreadId: null, disposition: "folded" },
+        ],
+      });
+      expect(created).toHaveBeenCalledWith("7");
+      expect(posted.mock.calls.map((call) => call[0])).toEqual(result.findings);
+      const calls = fetchMock.mock.calls;
+      const pendingBody = JSON.parse((calls[1]?.[1] as RequestInit).body as string);
+      expect(pendingBody.event).toBeUndefined();
+      expect(pendingBody.commit_id).toBe(headSha);
+      expect(pendingBody.comments).toEqual([{ path: "src/a.ts", line: 2, body: "Fix this", side: "RIGHT" }]);
+      expect(calls[2]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews/7/comments?per_page=100&page=1");
+      const overview = JSON.parse((calls[3]?.[1] as RequestInit).body as string).body as string;
+      expect((calls[3]?.[1] as RequestInit).method).toBe("PUT");
+      expect(overview).toContain(`[Fix this`);
+      expect(overview).toContain(`#discussion_r91`);
+      expect(overview).toContain("Outside hunk");
+      expect(overview).toContain("File note");
+      expect(overview).toContain("🤖 Reviewed by [Virtual Engineer]");
+      expect(calls[4]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42");
+      expect(JSON.parse((calls[5]?.[1] as RequestInit).body as string)).toEqual({ event: "REQUEST_CHANGES" });
+    });
+
+    it("matches duplicated locations by body across paginated responses and includes verified previous links", async () => {
+      const second = { ...finding, message: "Second", severity: "warning" };
+      const page = Array.from({ length: 99 }, (_, i) => postedComment(i + 1, `other ${i}`, 2));
+      const comments = Array.from({ length: 99 }, (_, i) => ({ ...finding, message: `other ${i}` }));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([...page, postedComment(100, second.message)]))
+        .mockResolvedValueOnce(jsonResponse([postedComment(101, finding.message)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({}));
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({
+          comments: [finding, second, ...comments],
+          previous: [{ comment: { ...finding, message: "Old issue" }, url: `${pr.html_url}#discussion_r3` }],
+          reReview: true, score: 1,
+        }),
+      );
+      expect(result.findings[0]?.url).toBe(`${pr.html_url}#discussion_r101`);
+      expect(result.findings[1]?.url).toBe(`${pr.html_url}#discussion_r100`);
+      const body = JSON.parse((fetchMock.mock.calls[4]?.[1] as RequestInit).body as string).body as string;
+      expect(body).toContain("Previously reported");
+      expect(body).toContain("#discussion_r3");
+      expect(JSON.parse((fetchMock.mock.calls[6]?.[1] as RequestInit).body as string).event).toBe("APPROVE");
+    });
+
+    it("posts an empty COMMENT overview without inventing links", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 8 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({}));
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [], score: 0 }),
+      );
+      expect(result.findings).toEqual([]);
+      expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string).comments).toBeUndefined();
+      expect(JSON.parse((fetchMock.mock.calls[4]?.[1] as RequestInit).body as string).event).toBe("COMMENT");
+    });
+
+    it("renders verified prior findings without URLs and includes verified fix counts", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 8 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({}));
+      await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({
+          comments: [], reReview: true, fixedCount: 2,
+          previous: [{ comment: finding, url: null }],
+        }),
+      );
+      const body = JSON.parse((fetchMock.mock.calls[2]?.[1] as RequestInit).body as string).body as string;
+      expect(body).toContain("Previously reported");
+      expect(body).toContain("2 verified fixes");
+      expect(body).not.toContain("](null)");
+    });
+
+    it("folds findings for files outside the PR diff instead of submitting invalid inline positions", async () => {
+      const unknown = { ...finding, file: "src/missing.ts" };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 8 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({}));
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [unknown] }),
+      );
+      expect(result.findings).toEqual([
+        { comment: unknown, url: null, providerThreadId: null, disposition: "folded" },
+      ]);
+      expect(JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string).comments).toBeUndefined();
+    });
+
+    it.each([
+      { name: "omitted", file: { filename: "assets/picture.png", status: "modified" } },
+      { name: "empty", file: { filename: "assets/picture.png", status: "modified", patch: "" } },
+    ])("folds a binary finding with an $name patch and keeps valid diff lines inline", async ({ file }) => {
+      const binary = { ...finding, file: file.filename, message: "Binary asset needs review" };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse([file, ...fileResponse]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }));
+
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [binary, finding] }),
+      );
+
+      const pending = JSON.parse((fetchMock.mock.calls[1]?.[1] as RequestInit).body as string);
+      expect(pending.comments).toEqual([{ path: finding.file, line: finding.line, body: finding.message, side: "RIGHT" }]);
+      expect(result.findings).toEqual([
+        { comment: finding, url: `${pr.html_url}#discussion_r91`, providerThreadId: "91", disposition: "inline" },
+        { comment: binary, url: null, providerThreadId: null, disposition: "folded" },
+      ]);
+      const body = JSON.parse((fetchMock.mock.calls[3]?.[1] as RequestInit).body as string).body as string;
+      expect(body).toContain("Binary asset needs review");
+      expect(body).not.toContain("](null)");
+    });
+
+    it.each([
+      { name: "missing anchor", response: { ...postedComment(9) as object, html_url: pr.html_url } },
+      { name: "wrong body", response: postedComment(9, "unrelated") },
+      { name: "missing line", response: { id: 9, path: "src/a.ts", body: finding.message, html_url: `${pr.html_url}#discussion_r9` } },
+    ])("deletes pending review rather than linking a $name", async ({ response }) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([response]))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(cid, 1, publication())).rejects.toThrow();
+      expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("rejects missing pending review ID without attempting an unsafe submission", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({}));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [] }),
+      )).rejects.toThrow(/review ID/i);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("deletes pending review if an inline comment is missing", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(cid, 1, publication()))
+        .rejects.toThrow(/deleted.*missing inline comments/i);
+      expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
+    });
+
+    it("never records pending inline or folded findings if submission fails", async () => {
+      const folded = { ...finding, line: 0 };
+      const posted = vi.fn(async (_finding: PublishedReviewFinding) => {});
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse({ ...pr, state: "closed" }))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [finding, folded], onFindingPosted: posted }),
+      )).rejects.toThrow(/deleted.*no longer open/i);
+      expect(posted).not.toHaveBeenCalled();
+      expect((fetchMock.mock.calls[5]?.[1] as RequestInit).method).toBe("DELETE");
+    });
+
+    it("never records findings if submission request fails and does not delete a potentially submitted review", async () => {
+      const posted = vi.fn(async (_finding: PublishedReviewFinding) => {});
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(new Response("timeout", { status: 503 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ onFindingPosted: posted }),
+      )).rejects.toThrow(/outcome unknown/i);
+      expect(posted).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("reports a post-submission ledger failure without deleting the published review", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }));
+      const callback = vi.fn(async () => { throw new Error("persistence failed"); });
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ onFindingPosted: callback }),
+      )).rejects.toThrow(/submitted.*persistence failed/i);
+      expect(callback).toHaveBeenCalledOnce();
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("cleans up when updating the overview fails", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [] }),
+      )).rejects.toThrow(/deleted.*503/);
+      expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("requires the captured head SHA before creating a pending review", async () => {
+      const details = { ...publication().details, headSha: undefined };
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [], details }),
+      )).rejects.toThrow(/known head SHA/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("deletes pending review and never submits on a newer head", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse({ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [] }),
+      )).rejects.toThrow(/deleted.*reviewed head SHA/);
+      expect((fetchMock.mock.calls[4]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it("does not submit on a changed head and surfaces failed cleanup", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse({ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }))
+        .mockResolvedValueOnce(new Response("cleanup failed", { status: 500 }));
+      const error = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [] }),
+      ).catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as Error).message).toMatch(/cleanup failed.*draft may remain/i);
+      expect((fetchMock.mock.calls[4]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it("cleans up an aborted pending review and never submits", async () => {
+      const controller = new AbortController();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockImplementationOnce(() => {
+          controller.abort();
+          return Promise.resolve(jsonResponse([]));
+        })
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await expect(new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [] }), controller.signal,
+      )).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect((fetchMock.mock.calls[2]?.[1] as RequestInit).signal).toBeUndefined();
+    });
+  });
   it("getChangeDetails maps open PR to OPEN status", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
       number: 42,
@@ -45,6 +422,7 @@ describe("GitHubReviewProvider", () => {
     expect(r.targetBranch).toBe("main");
     expect(r.project).toBe("octocat/hello-world");
     expect(r.ownerAccountId).toBe("123");
+    expect(r.headSha).toBe("abc");
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.github.com/repos/octocat/hello-world/pulls/42",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer ghp_test" }) })
@@ -174,6 +552,49 @@ describe("GitHubReviewProvider", () => {
     expect(r.files[0]).toEqual({ path: "src/a.ts", status: "added", patch: "@@\n+new" });
     expect(r.files[2]?.status).toBe("deleted");
     expect(r.files[3]?.status).toBe("renamed");
+    expect(r.files[3]?.patch).toBe("");
+  });
+
+  it("getChangeDiff includes later file pages and keeps binary files without synthetic patches", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      filename: `src/changed-${index}.ts`, status: "modified", patch: "@@ -1 +1 @@\n+one",
+    }));
+    const controller = new AbortController();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(jsonResponse([
+        { filename: "assets/picture.png", status: "added" },
+        { filename: "src/late.ts", status: "modified", patch: "@@ -1 +1 @@\n+late" },
+      ]));
+    const result = await new GitHubReviewProvider(config).getChangeDiff(cid, 42, controller.signal);
+    expect(result.files).toHaveLength(102);
+    expect(result.files.at(-2)).toEqual({ path: "assets/picture.png", status: "added", patch: "" });
+    expect(result.files.at(-1)?.path).toBe("src/late.ts");
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.github.com/repos/octocat/hello-world/pulls/42/files?per_page=100&page=1",
+      "https://api.github.com/repos/octocat/hello-world/pulls/42/files?per_page=100&page=2",
+    ]);
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).toBe(controller.signal);
+  });
+
+  it("getChangeDiff refuses a full 3,000-file response rather than returning a truncated prompt", async () => {
+    const page = Array.from({ length: 100 }, (_, index) => ({
+      filename: `src/changed-${index}.ts`, status: "modified", patch: "@@ -1 +1 @@\n+one",
+    }));
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(page)));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/3,000.*complete/i);
+    expect(fetchMock).toHaveBeenCalledTimes(30);
+  });
+
+  it("getChangeDiff rejects an overfull file page rather than exceeding the 3,000-file bound", async () => {
+    const page = Array.from({ length: 101 }, (_, index) => ({
+      filename: `src/changed-${index}.ts`, status: "modified", patch: "@@ -1 +1 @@\n+one",
+    }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(page));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/more than 100/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("getChangeDiff echoes the requested patchset", async () => {

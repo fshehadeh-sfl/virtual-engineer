@@ -26,6 +26,8 @@ export interface ReviewPromptInput {
    * Injected so the agent does not re-raise points it has already made.
    */
   priorComments?: PriorReviewComment[] | undefined;
+  /** Hosted reviews reassess prior findings by their stable persisted IDs. */
+  reassessPriorFindings?: boolean | undefined;
   /**
    * Open human discussion threads the agent may reply to. Each thread carries a
    * `threadId` the agent must echo back in its `replies[]` output to address it.
@@ -52,6 +54,7 @@ export interface SinceLastReviewDelta {
 
 /** A previously-posted review comment surfaced back to the agent as memory. */
 export interface PriorReviewComment {
+  id?: number | undefined;
   file: string;
   line: number;
   message: string;
@@ -65,6 +68,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
     instructionsPrompt,
     maxDiffChars,
     priorComments,
+    reassessPriorFindings,
     discussionThreads,
     sinceLastReview,
   } = input;
@@ -110,7 +114,11 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
   );
 
   if (priorComments && priorComments.length > 0) {
-    sections.push(``, `## Already reported (do not repeat)`, renderPriorComments(priorComments));
+    sections.push(
+      ``,
+      reassessPriorFindings === true ? `## Previous findings to reassess` : `## Already reported (do not repeat)`,
+      renderPriorComments(priorComments, reassessPriorFindings === true),
+    );
   }
 
   if (discussionThreads && discussionThreads.length > 0) {
@@ -145,14 +153,28 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
  * Render previously-posted comments as a compact checklist. The agent is told
  * not to repeat these so re-reviews only surface genuinely new findings.
  */
-function renderPriorComments(priorComments: PriorReviewComment[]): string {
+function renderPriorComments(priorComments: PriorReviewComment[], reassess: boolean): string {
   const lines = priorComments.map((c) => {
     const message = c.message.replace(/\s+/g, " ").trim();
-    return `- ${c.file}:${c.line} — ${message}`;
+    if (reassess && c.id === undefined) {
+      throw new Error("A prior finding cannot be reassessed without a persisted finding ID");
+    }
+    return `- ${reassess ? `findingId: ${c.id} · ` : ""}${c.file}:${c.line} — ${message}`;
   });
+  const instructions = reassess
+    ? [
+        "For each findingId, inspect the current code and classify it as",
+        "still_present, fixed, or uncertain in priorFindingAssessments, with",
+        "concrete evidence. A resolved discussion alone does not prove a fix.",
+        "Do not repeat still-present findings as new comments. Report a",
+        "regression as a new finding only if an earlier issue was fixed.",
+      ]
+    : [
+        "You have already left the following comments on this change in earlier",
+        "review cycles. Do NOT repeat them; only report genuinely new issues:",
+      ];
   return [
-    "You have already left the following comments on this change in earlier",
-    "review cycles. Do NOT repeat them; only report genuinely new issues:",
+    ...instructions,
     "",
     ...lines,
   ].join("\n");

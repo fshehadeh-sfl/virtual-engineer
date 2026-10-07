@@ -32,6 +32,9 @@ describe("severityRank", () => {
     expect(severityRank("warn")).toBe(severityRank("warning"));
     expect(severityRank("suggestion")).toBe(severityRank("info"));
     expect(severityRank("nitpick")).toBe(severityRank("nit"));
+    expect(severityRank("high")).toBe(severityRank("error"));
+    expect(severityRank("medium")).toBe(severityRank("warning"));
+    expect(severityRank("low")).toBe(severityRank("info"));
   });
 
   it("treats unknown severities as info", () => {

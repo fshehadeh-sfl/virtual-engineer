@@ -9,9 +9,13 @@ import type {
   ReviewFileStatus,
   InlineReviewComment,
   ExternalChangeId,
+  ReviewOverviewPublication,
+  ReviewOverviewPublicationResult,
+  PublishedReviewFinding,
 } from "../interfaces.js";
 import { getLogger } from "../logger.js";
 import { filterCommentsByAllowedFiles } from "../review/commentFilter.js";
+import { renderReviewOverview } from "../review/reviewOverview.js";
 import { patchsetFromRevisionSha } from "../review/revisionPatchset.js";
 import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
@@ -35,6 +39,16 @@ const GitHubPrFileSchema = z.object({
   patch: z.string().optional().default(""),
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
+const GitHubPendingReviewSchema = z.object({
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+const GitHubPendingCommentListSchema = z.array(z.object({
+  id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  html_url: z.string(),
+  path: z.string(),
+  line: z.number().int().positive(),
+  body: z.string(),
+}));
 
 const GitHubPrCommitListSchema = z.array(z.object({ sha: z.string() }));
 const GitHubCompareResponseSchema = z.object({
@@ -179,6 +193,7 @@ export class GitHubReviewProvider implements ReviewProvider {
       // Derived from the PR head SHA so the review dedup re-reviews the PR when
       // new commits are pushed (GitHub has no monotonic patchset counter).
       currentPatchset: patchsetFromRevisionSha(pr.head.sha),
+      headSha: pr.head.sha,
       status,
       project: pr.base.repo.full_name,
       targetBranch: pr.base.ref,
@@ -261,12 +276,7 @@ export class GitHubReviewProvider implements ReviewProvider {
 
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
-    const files = GitHubPrFileListSchema.parse(
-      await this.fetchJson(
-        `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
-        signal !== undefined ? { signal } : undefined,
-      )
-    );
+    const files = await this.getPrFiles(this.prUrl(owner, repo, prNumber), signal);
 
     return {
       changeId,
@@ -351,6 +361,184 @@ export class GitHubReviewProvider implements ReviewProvider {
       allowedFiles,
       signal,
     );
+  }
+
+  async postReviewOverview(
+    changeId: ExternalChangeId,
+    _revision: number,
+    publication: ReviewOverviewPublication,
+    signal?: AbortSignal,
+  ): Promise<ReviewOverviewPublicationResult> {
+    const { owner, repo, prNumber } = this.parseChangeId(changeId);
+    const prUrl = this.prUrl(owner, repo, prNumber);
+    const headSha = publication.details.headSha;
+    if (!headSha || publication.details.status !== "OPEN") {
+      throw new Error("GitHub review overview requires an open PR with a known head SHA");
+    }
+    signal?.throwIfAborted();
+
+    const inline: InlineReviewComment[] = [];
+    const folded: InlineReviewComment[] = [];
+    const positive = publication.comments.filter((comment) => comment.line > 0);
+    const validLinesByFile = new Map<string, Set<number>>();
+    if (positive.length > 0) {
+      const files = await this.getPrFiles(prUrl, signal);
+      for (const file of files) {
+        if (file.patch) validLinesByFile.set(file.filename, parsePatchNewLineNumbers(file.patch));
+      }
+    }
+    for (const comment of publication.comments) {
+      const lines = validLinesByFile.get(comment.file);
+      if (comment.line > 0 && lines?.has(comment.line) === true) {
+        inline.push(comment);
+      } else {
+        folded.push(comment);
+      }
+    }
+    for (const comment of publication.folded) {
+      if (!publication.comments.includes(comment)) folded.push(comment);
+    }
+
+    signal?.throwIfAborted();
+    const createdResponse = await this.fetchJson(`${prUrl}/reviews`, {
+      method: "POST",
+      body: JSON.stringify({
+        body: "",
+        commit_id: headSha,
+        ...(inline.length > 0 ? {
+          comments: inline.map((comment) => ({
+            path: comment.file, line: comment.line, body: comment.message, side: "RIGHT",
+          })),
+        } : {}),
+      }),
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    const created = GitHubPendingReviewSchema.safeParse(createdResponse);
+    if (!created.success) throw new Error("GitHub pending review response missing a valid review ID");
+    const remoteId = String(created.data.id);
+    const reviewUrl = `${prUrl}/reviews/${remoteId}`;
+    let submitting = false;
+    let submitted = false;
+    try {
+      await publication.onPublicationCreated?.(remoteId);
+      const matched = new Map<number, PublishedReviewFinding>();
+      const unmatched = new Map<string, number[]>();
+      for (const [index, comment] of inline.entries()) {
+        const key = JSON.stringify([comment.file, comment.line, comment.message]);
+        const indices = unmatched.get(key) ?? [];
+        indices.push(index);
+        unmatched.set(key, indices);
+      }
+
+      for (let page = 1; page <= 100; page++) {
+        signal?.throwIfAborted();
+        const comments = GitHubPendingCommentListSchema.parse(await this.fetchJson(
+          `${reviewUrl}/comments?per_page=100&page=${page}`,
+          signal !== undefined ? { signal } : undefined,
+        ));
+        for (const comment of comments) {
+          const key = JSON.stringify([comment.path, comment.line, comment.body]);
+          const index = unmatched.get(key)?.shift();
+          if (index === undefined) {
+            throw new Error("GitHub pending review returned an unexpected inline comment");
+          }
+          const url = new URL(comment.html_url);
+          const expected = new URL(publication.details.url);
+          if (
+            !["http:", "https:"].includes(url.protocol) ||
+            url.origin !== expected.origin ||
+            url.pathname !== expected.pathname ||
+            url.hash !== `#discussion_r${comment.id}`
+          ) {
+            throw new Error("GitHub pending review returned an invalid inline comment URL");
+          }
+          const finding: PublishedReviewFinding = {
+            comment: inline[index]!, url: url.href,
+            providerThreadId: String(comment.id), disposition: "inline",
+          };
+          matched.set(index, finding);
+        }
+        if (comments.length < 100) break;
+        if (page === 100) throw new Error("GitHub pending review comment pagination exceeded 100 pages");
+      }
+      if (matched.size !== inline.length) {
+        throw new Error("GitHub pending review is missing inline comments");
+      }
+      const findings: PublishedReviewFinding[] = inline.map((_, index) => matched.get(index)!);
+      for (const comment of folded) {
+        const finding: PublishedReviewFinding = {
+          comment, url: null, providerThreadId: null, disposition: "folded",
+        };
+        findings.push(finding);
+      }
+      const body = renderReviewOverview({
+        score: publication.score,
+        summary: publication.summary,
+        changeOverview: publication.changeOverview,
+        requiredAction: publication.requiredAction,
+        commitSha: headSha,
+        kind: "github",
+        advisoryOnly: false,
+        reReview: publication.reReview,
+        fixedCount: publication.fixedCount,
+        findings: [
+          ...findings.map((finding) => ({
+            comment: finding.comment, status: "new" as const,
+            ...(finding.url !== null ? { url: finding.url } : {}),
+          })),
+          ...publication.previous.map((previous) => ({
+            comment: previous.comment, status: "previous" as const,
+            ...(previous.url !== null ? { url: previous.url } : {}),
+          })),
+        ],
+      });
+      signal?.throwIfAborted();
+      await this.fetchJson(`${reviewUrl}`, {
+        method: "PUT",
+        body: JSON.stringify({ body }),
+        ...(signal !== undefined ? { signal } : {}),
+      });
+      signal?.throwIfAborted();
+      const current = GitHubPrSchema.parse(await this.fetchJson(
+        prUrl, signal !== undefined ? { signal } : undefined,
+      ));
+      if (current.state !== "open" || current.merged || current.head.sha !== headSha) {
+        throw new Error("GitHub PR is no longer open at the reviewed head SHA");
+      }
+      signal?.throwIfAborted();
+      submitting = true;
+      await this.fetchJson(`${reviewUrl}/events`, {
+        method: "POST",
+        body: JSON.stringify({
+          event: publication.score < 0 ? "REQUEST_CHANGES" : publication.score > 0 ? "APPROVE" : "COMMENT",
+        }),
+        ...(signal !== undefined ? { signal } : {}),
+      });
+      submitted = true;
+      for (const finding of findings) {
+        await publication.onFindingPosted?.(finding);
+      }
+      return { findings, remoteId, advisoryOnly: false };
+    } catch (error: unknown) {
+      const reason = sanitizeErrorDetail(error instanceof Error ? error.message : String(error));
+      if (!submitting) {
+        try {
+          await this.fetchJsonVoid(reviewUrl, { method: "DELETE" });
+        } catch (cleanupError: unknown) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `GitHub pending review ${remoteId} cleanup failed after pre-submission failure; draft may remain`,
+          );
+        }
+        throw new Error(`GitHub pending review ${remoteId} deleted after pre-submission failure: ${reason}`, { cause: error });
+      }
+      throw new Error(
+        submitted
+          ? `GitHub review ${remoteId} submitted but finding persistence failed: ${reason}`
+          : `GitHub review ${remoteId} submission outcome unknown; pending review not deleted: ${reason}`,
+        { cause: error },
+      );
+    }
   }
 
   async vote(
@@ -467,6 +655,21 @@ export class GitHubReviewProvider implements ReviewProvider {
 
   private prUrl(owner: string, repo: string, prNumber: number): string {
     return `${this.config.apiBaseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`;
+  }
+
+  private async getPrFiles(prUrl: string, signal?: AbortSignal): Promise<z.infer<typeof GitHubPrFileListSchema>> {
+    const files: z.infer<typeof GitHubPrFileListSchema> = [];
+    for (let page = 1; page <= 30; page++) {
+      signal?.throwIfAborted();
+      const pageFiles = GitHubPrFileListSchema.parse(await this.fetchJson(
+        `${prUrl}/files?per_page=100&page=${page}`,
+        signal !== undefined ? { signal } : undefined,
+      ));
+      if (pageFiles.length > 100) throw new Error("GitHub PR file page returned more than 100 files");
+      files.push(...pageFiles);
+      if (pageFiles.length < 100) return files;
+    }
+    throw new Error("GitHub PR files reached the 3,000-file cap; cannot verify complete file list");
   }
 
   private async resolvePatchsetSha(

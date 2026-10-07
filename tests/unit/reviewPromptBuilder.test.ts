@@ -146,6 +146,22 @@ describe("buildReviewPrompt", () => {
     // Whitespace in the stored message is collapsed for a compact checklist.
     expect(prompt).toContain("src/bar.ts:3 — Use const instead.");
   });
+
+  it("asks hosted reviews to reassess numbered active findings", () => {
+    const prompt = buildReviewPrompt({
+      details,
+      diff,
+      instructionsPrompt: "Review this.",
+      reassessPriorFindings: true,
+      priorComments: [
+        { id: 17, file: "src/foo.ts", line: 12, message: "Null check missing here." },
+      ],
+    });
+    expect(prompt).toContain("## Previous findings to reassess");
+    expect(prompt).toContain("findingId: 17");
+    expect(prompt).toContain("still_present, fixed, or uncertain");
+    expect(prompt).not.toContain("## Already reported (do not repeat)");
+  });
 });
 
 describe("buildReviewPrompt commit message", () => {

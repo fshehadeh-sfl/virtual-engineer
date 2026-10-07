@@ -19,15 +19,18 @@ const SEVERITY_RANKS: Record<string, number> = {
   trivial: 0,
   // informational / suggestions
   info: 1,
+  low: 1,
   information: 1,
   suggestion: 1,
   style: 1,
   // warnings
   warning: 2,
+  medium: 2,
   warn: 2,
   major: 2,
   // blocking issues
   error: 3,
+  high: 3,
   critical: 3,
   blocker: 3,
   blocking: 3,
