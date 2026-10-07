@@ -71,6 +71,7 @@ describe("ProjectFormModal repository integration resolution", () => {
           onSaved={vi.fn()}
         />,
       );
+      fireEvent.change(screen.getByRole("combobox", { name: /^Agent/ }), { target: { value: codingAgent.id } });
 
       expect(screen.getByText("Additional Skills")).toBeTruthy();
       expect(screen.queryByDisplayValue("ssh://g1.sfl.io/sfl/agent-skills")).toBeNull();
@@ -1190,5 +1191,113 @@ describe("ProjectFormModal repository integration resolution", () => {
     );
 
     expect(screen.getByLabelText("Reviewer assignment")).toHaveProperty("value", "automatic");
+  });
+
+  describe("dependent fields", () => {
+    function ticketingIntegration(id: string): ApiIntegration {
+      return { id, provider: "redmine", name: id, enabled: true, capabilities: [], domainCapabilities: ["issue_tracking"] };
+    }
+
+    function reviewIntegration(id: string, modes: Array<"manual" | "automatic">): ApiIntegration {
+      return {
+        id, provider: "github", name: id, enabled: true, capabilities: [], domainCapabilities: ["code_review"],
+        reviewAssignmentModes: modes,
+        discoveredResources: { repositories: [{ key: `${id}/repo`, name: "Repo" }] },
+      };
+    }
+
+    it("reveals the ticket project key and ticket options after choosing a ticket source, clearing the key on change", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "offline" }), {
+        status: 502, headers: { "content-type": "application/json" },
+      })));
+      render(<ProjectFormModal agents={[codingAgent]} integrations={[ticketingIntegration("t1"), ticketingIntegration("t2")]} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+      expect(screen.queryByText("Ticket Project Key")).toBeNull();
+      expect(screen.queryByText("Ticket URL in Commits")).toBeNull();
+      expect(screen.queryByText("Post Review Link to Ticket")).toBeNull();
+
+      const ticketing = screen.getByRole("combobox", { name: /Ticketing Integration/ });
+      fireEvent.change(ticketing, { target: { value: "t1" } });
+      const key = await screen.findByPlaceholderText("PROJECT_KEY");
+      fireEvent.change(key, { target: { value: "ABC" } });
+      expect(screen.getByText("Ticket URL in Commits")).toBeTruthy();
+      expect(screen.getByText("Post Review Link to Ticket")).toBeTruthy();
+
+      fireEvent.change(ticketing, { target: { value: "t2" } });
+      expect(await screen.findByPlaceholderText("PROJECT_KEY")).toHaveProperty("value", "");
+    });
+
+    it("reveals repository, branch, and Gerrit topic fields step by step and resets them on integration change", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ branches: ["main"] }), {
+        status: 200, headers: { "content-type": "application/json" },
+      })));
+      render(<ProjectFormModal
+        agents={[codingAgent]}
+        integrations={[gerritIntegration("gerrit-1", "Gerrit 1"), gerritIntegration("gerrit-2", "Gerrit 2")]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />);
+
+      expect(screen.queryByText("Repository Key")).toBeNull();
+      expect(screen.queryByText("Target Branch")).toBeNull();
+      expect(screen.queryByText("Custom Gerrit Topic")).toBeNull();
+      expect(screen.getByLabelText(/Clone URL/)).toBeTruthy();
+
+      const vcs = screen.getByLabelText(/VCS Integration/);
+      fireEvent.change(vcs, { target: { value: "gerrit-1" } });
+      expect(screen.getByText("Repository Key")).toBeTruthy();
+      expect(screen.getByText("Custom Gerrit Topic")).toBeTruthy();
+      expect(screen.queryByText("Target Branch")).toBeNull();
+
+      fireEvent.click(await screen.findByRole("button", { name: "— select —" }));
+      fireEvent.click(screen.getByRole("button", { name: /Runtime/ }));
+      expect(await screen.findByText("Target Branch")).toBeTruthy();
+      expect(screen.getByLabelText(/Clone URL/)).toHaveProperty("value", "ssh://git@gerrit.example.com:29418/platform/runtime.git");
+
+      fireEvent.change(vcs, { target: { value: "gerrit-2" } });
+      expect(screen.queryByText("Target Branch")).toBeNull();
+      expect(screen.getByLabelText(/Clone URL/)).toHaveProperty("value", "");
+    });
+
+    it("reveals review assignment and repositories after choosing a review integration, resetting them on change", () => {
+      const reviewAgent: ApiAgent = { ...codingAgent, id: "review-agent", type: "review" };
+      render(<ProjectFormModal
+        agents={[reviewAgent]}
+        integrations={[reviewIntegration("r1", ["manual", "automatic"]), reviewIntegration("r2", ["manual", "automatic"])]}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />);
+      fireEvent.change(screen.getByRole("combobox", { name: /^Type/ }), { target: { value: "review" } });
+
+      expect(screen.queryByText("Reviewer assignment")).toBeNull();
+      expect(screen.queryByText("Repository Keys")).toBeNull();
+
+      const integration = screen.getByRole("combobox", { name: /Review Integration/ });
+      fireEvent.change(integration, { target: { value: "r1" } });
+      fireEvent.change(screen.getByLabelText("Reviewer assignment"), { target: { value: "automatic" } });
+      expect(screen.getByText("Repository Keys")).toBeTruthy();
+
+      fireEvent.change(integration, { target: { value: "r2" } });
+      expect(screen.getByLabelText("Reviewer assignment")).toHaveProperty("value", "manual");
+    });
+
+    it("shows additional skills only for an agent whose engine installs them", () => {
+      const integrations: ApiIntegration[] = [
+        { id: "aider-1", provider: "aider", name: "Aider", enabled: true, capabilities: [], domainCapabilities: ["agent_execution"] },
+        { id: "claude-1", provider: "claude", name: "Claude", enabled: true, capabilities: [], domainCapabilities: ["agent_execution"] },
+      ];
+      const agents = [
+        { ...codingAgent, id: "aider-agent", integrationId: "aider-1" },
+        { ...codingAgent, id: "claude-agent", integrationId: "claude-1" },
+      ];
+      render(<ProjectFormModal agents={agents} integrations={integrations} onClose={vi.fn()} onSaved={vi.fn()} />);
+      const agent = screen.getByRole("combobox", { name: /^Agent/ });
+
+      expect(screen.queryByText("Additional Skills")).toBeNull();
+      fireEvent.change(agent, { target: { value: "aider-agent" } });
+      expect(screen.queryByText("Additional Skills")).toBeNull();
+      fireEvent.change(agent, { target: { value: "claude-agent" } });
+      expect(screen.getByText("Additional Skills")).toBeTruthy();
+    });
   });
 });
