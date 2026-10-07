@@ -95,6 +95,8 @@ Methods used by the orchestrator:
 - `isReviewer()` reads Gerrit's reviewer list fail-closed; `ensureReviewerAssignment()` uses `gerrit set-reviewers --add` and never replaces existing reviewers. Stream patchset events reach the per-project assignment policy; trivial rebases remain excluded.
 - `getInterPatchsetDiff(changeId, fromPatchset, toPatchset)` (optional `ReviewProvider` method) shallow-fetches both patchset refs and diffs their tips (`git diff fromTip..toTip`) so re-reviews can surface "what changed since my last review" as a focused delta section in the prompt.
 
+GitHub PR review diff retrieval paginates the `/files` listing (100 files/page) and rejects missing patches or the API's 3,000-file ceiling rather than approving from an incomplete response. Its optional inter-patchset comparison rejects GitHub's 300-file cap and falls back to the complete PR diff. GitLab MR review rejects `/changes` responses reporting `overflow` or missing patches rather than reviewing a subset.
+
 ### `PluginIntegrationStreamEventsManager` — [src/connectors/integrationStreamEvents.ts](../../../src/connectors/integrationStreamEvents.ts)
 
 - Generic host-side wrapper that groups demanded active integrations by provider, discovers which descriptors expose `capabilities.code_review.streamEvents`, and delegates reconciliation, targeted backfill, and status to the provider-specific manager for each integration.

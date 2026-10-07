@@ -62,12 +62,13 @@ const MrChangeSchema = z.object({
   new_file: z.boolean().optional().default(false),
   renamed_file: z.boolean().optional().default(false),
   deleted_file: z.boolean().optional().default(false),
-  diff: z.string().optional().default(""),
+  diff: z.string().optional(),
 });
 
 const MrChangesResponseSchema = z.object({
-  changes: z.array(MrChangeSchema).optional().default([]),
+  changes: z.array(MrChangeSchema),
   diff_refs: DiffRefsSchema,
+  overflow: z.boolean().optional().default(false),
 });
 
 const ProjectSchema = z.object({ path_with_namespace: z.string() });
@@ -290,6 +291,13 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
         signal !== undefined ? { signal } : undefined,
       )
     );
+    if (res.overflow) {
+      throw new Error(`GitLab MR ${project}#${iid}: diff overflow; cannot review an incomplete diff`);
+    }
+    const missingPatch = res.changes.find((change) => change.diff === undefined);
+    if (missingPatch !== undefined) {
+      throw new Error(`GitLab MR ${project}#${iid}: patch unavailable for ${missingPatch.new_path || missingPatch.old_path}; cannot review an incomplete diff`);
+    }
 
     return {
       changeId,
@@ -300,7 +308,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
         (ch): ReviewDiffFile => ({
           path: ch.new_path || ch.old_path,
           status: mapFileStatus(ch),
-          patch: ch.diff,
+          patch: ch.diff ?? "",
         })
       ),
     };

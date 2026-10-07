@@ -184,6 +184,40 @@ describe("GitHubReviewProvider", () => {
     expect(r.patchset).toBe(42);
   });
 
+  it("getChangeDiff fetches every page of PR files", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({
+      filename: `src/file-${i}.ts`, status: "modified", patch: `+${i}`,
+    }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(jsonResponse([
+        { filename: "src/last.ts", status: "added", patch: "+last" },
+      ]));
+
+    const result = await new GitHubReviewProvider(config).getChangeDiff(cid);
+    expect(result.files).toHaveLength(101);
+    expect(result.files[100]?.patch).toBe("+last");
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("/files?per_page=100&page=2");
+  });
+
+  it("rejects PR files with unavailable patches instead of approving an incomplete review", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/missing.ts", status: "modified" },
+    ]));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/patch.*src\/missing\.ts/i);
+  });
+
+  it("rejects changes at GitHub's 3,000-file listing cap", async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      filename: `src/file-${i}.ts`, status: "modified", patch: `+${i}`,
+    }));
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse(fullPage)));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/3,000-file limit/i);
+    expect(fetchMock).toHaveBeenCalledTimes(30);
+  });
+
   it("getInterPatchsetDiff compares the old reviewed commit with the current head", async () => {
     const fromSha = "1111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const toSha = "2222222222222bbbbbbbbbbbbbbbbbbbbbbbbb";

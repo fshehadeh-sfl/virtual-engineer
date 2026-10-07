@@ -32,7 +32,7 @@ const GitHubPrSchema = z.object({
 const GitHubPrFileSchema = z.object({
   filename: z.string(),
   status: z.string(),
-  patch: z.string().optional().default(""),
+  patch: z.string().optional(),
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 
@@ -261,12 +261,11 @@ export class GitHubReviewProvider implements ReviewProvider {
 
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
-    const files = GitHubPrFileListSchema.parse(
-      await this.fetchJson(
-        `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
-        signal !== undefined ? { signal } : undefined,
-      )
-    );
+    const files = await this.getPullRequestFiles(owner, repo, prNumber, signal);
+    const missingPatch = files.find((file) => file.patch === undefined);
+    if (missingPatch !== undefined) {
+      throw new Error(`GitHub PR ${owner}/${repo}#${prNumber}: patch unavailable for ${missingPatch.filename}; cannot review an incomplete diff`);
+    }
 
     return {
       changeId,
@@ -276,9 +275,31 @@ export class GitHubReviewProvider implements ReviewProvider {
       files: files.map((f): ReviewDiffFile => ({
         path: f.filename,
         status: mapFileStatus(f.status),
-        patch: f.patch,
+        patch: f.patch ?? "",
       })),
     };
+  }
+
+  private async getPullRequestFiles(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<z.infer<typeof GitHubPrFileListSchema>> {
+    const perPage = 100;
+    const maxFiles = 3_000;
+    const files: z.infer<typeof GitHubPrFileListSchema> = [];
+    for (let page = 1; ; page++) {
+      const batch = GitHubPrFileListSchema.parse(await this.fetchJson(
+        `${this.prUrl(owner, repo, prNumber)}/files?per_page=${perPage}${page > 1 ? `&page=${page}` : ""}`,
+        signal !== undefined ? { signal } : undefined,
+      ));
+      files.push(...batch);
+      if (batch.length < perPage) return files;
+      if (files.length >= maxFiles) {
+        throw new Error(`GitHub PR ${owner}/${repo}#${prNumber}: 3,000-file limit reached; cannot review an incomplete diff`);
+      }
+    }
   }
 
   async getInterPatchsetDiff(
@@ -315,6 +336,9 @@ export class GitHubReviewProvider implements ReviewProvider {
       status: mapFileStatus(file.status),
       patch: file.patch ?? "",
     }));
+    if (compare.files.length >= 300) {
+      throw new Error(`GitHub PR ${owner}/${repo}#${prNumber}: inter-patchset comparison reached GitHub's 300-file limit`);
+    }
 
     log.info(
       { changeId: details.changeId, fromPatchset, toPatchset, fileCount: files.length },
@@ -387,12 +411,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     const validLinesByFile = new Map<string, Set<number>>();
     if (positiveLineComments.length > 0) {
       try {
-        const files = GitHubPrFileListSchema.parse(
-          await this.fetchJson(
-            `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
-            signal !== undefined ? { signal } : undefined,
-          )
-        );
+        const files = await this.getPullRequestFiles(owner, repo, prNumber, signal);
         for (const f of files) {
           if (f.patch) {
             validLinesByFile.set(f.filename, parsePatchNewLineNumbers(f.patch));
