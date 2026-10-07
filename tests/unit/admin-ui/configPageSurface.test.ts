@@ -498,3 +498,13 @@ describe("ConfigPageSurface", () => {
     expect(screen.getByPlaceholderText("Example: You are a careful coding agent. Follow repository conventions and never commit secrets.")).toBeDefined();
   });
 });
+
+describe("Configuration page width", () => {
+  it("does not cap entity pages narrower than the configuration content column", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const css = await readFile("src/admin/ui/theme/global.css", "utf8");
+    const entityPage = /\.config-entity-page\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(entityPage).toMatch(/width:\s*100%;/);
+    expect(entityPage).not.toMatch(/max-width|min\(/);
+  });
+});

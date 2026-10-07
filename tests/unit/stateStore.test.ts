@@ -21,6 +21,41 @@ describe("SqliteStateStore", () => {
     store.close();
   });
 
+  it("aggregates review votes in batches without loading cycle payloads", async () => {
+    const raw = (store as unknown as { raw: Database.Database }).raw;
+    const insertTask = raw.prepare(
+      "INSERT INTO tasks (task_id, ticket_id, task_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    );
+    const insertCycle = raw.prepare(
+      "INSERT INTO agent_cycles (task_id, cycle_number, agent_result, created_at) VALUES (?, ?, ?, ?)"
+    );
+    const now = Math.floor(Date.now() / 1000);
+    const ids = Array.from({ length: 950 }, (_, i) => makeTaskId(`review-vote-${i}`));
+    raw.transaction(() => {
+      ids.forEach((id, i) => {
+        insertTask.run(id, `ticket-${i}`, "code-review", now, now);
+        insertCycle.run(id, 1, JSON.stringify({ metadata: { score: 2 } }), now);
+      });
+      insertTask.run("non-review", "non-review", "code-gen", now, now);
+      insertCycle.run("non-review", 1, '{"metadata":{"score":2}}', now);
+      insertCycle.run(ids[0], 2, '{"metadata":{"score":-1}}', now - 8 * 86400);
+      insertCycle.run(ids[1], 2, '{"metadata":{"score":true}}', now);
+      insertCycle.run(ids[2], 2, "corrupt result", now);
+      insertCycle.run(ids[3], 2, '{"metadata":{"score":1}}', now);
+      insertCycle.run(ids[4], 2, '{"metadata":{"score":-2}}', now);
+    })();
+
+    expect(await store.getReviewVoteCounts(ids, new Date((now - 7 * 86400) * 1000))).toEqual({
+      plus2: 950, plus1: 1, minus1: 0, minus2: 1,
+    });
+    expect(await store.getReviewVoteCounts([ids[0]!])).toEqual({
+      plus2: 1, plus1: 0, minus1: 1, minus2: 0,
+    });
+    expect(await store.getReviewVoteCounts([])).toEqual({
+      plus2: 0, plus1: 0, minus1: 0, minus2: 0,
+    });
+  });
+
   describe("managed OpenShell providers", () => {
     it("persists provider ownership across store restarts", async () => {
       const dbPath = tempDbPath();

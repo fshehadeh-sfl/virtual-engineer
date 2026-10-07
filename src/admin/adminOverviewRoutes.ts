@@ -13,6 +13,8 @@ import type {
   ModelUsageSummary,
   ProjectId,
   ProjectRecord,
+  ReviewVoteCounts,
+  TaskId,
 } from "../interfaces.js";
 import { makeTaskId, TASK_WORKFLOW_BUCKETS } from "../interfaces.js";
 import type { AdminRuntimeConfig } from "./adminServer.js";
@@ -24,6 +26,7 @@ const log = getLogger("admin-overview");
 export interface OverviewRouteStore {
   getAllTasks(): Promise<Task[]>;
   getAgentCycles(taskId: ReturnType<typeof makeTaskId>): Promise<AgentCycle[]>;
+  getReviewVoteCounts?(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts>;
   getCostSummary(options?: { since?: Date }): Promise<CostSummary>;
   getModelUsageSummary(options?: { since?: Date }): Promise<ModelUsageSummary>;
 }
@@ -141,22 +144,39 @@ function computeThroughput(tasks: Task[], pollingIntervalMs: number): number[] {
   return bins;
 }
 
-/** Extract review vote counts from the last 7 days of agent cycles. */
+/** Parse an optional trailing-period `?days=<n>` query parameter; omitted or invalid means all-time. */
+function parseSinceDays(reqUrl: string | undefined): Date | undefined {
+  const daysParam = new URL(reqUrl ?? "/", "http://127.0.0.1").searchParams.get("days");
+  if (daysParam === null) return undefined;
+  const days = Number(daysParam);
+  return Number.isFinite(days) && days > 0
+    ? new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    : undefined;
+}
+
+/** Count review votes from review-task agent cycles created after `since` (all-time when omitted). */
 async function computeReviewVotes(
   tasks: Task[],
-  store: OverviewRouteStore
-): Promise<{ plus2: number; plus1: number; minus1: number; minus2: number }> {
-  const sevenDaysAgo = Date.now() - SEVEN_DAYS_MS;
+  store: OverviewRouteStore,
+  since?: Date
+): Promise<ReviewVoteCounts> {
+  const sinceMs = since?.getTime() ?? Number.NEGATIVE_INFINITY;
   const votes = { plus2: 0, plus1: 0, minus1: 0, minus2: 0 };
 
   const reviewTasks = tasks.filter(
-    (t) => t.taskType === "code-review" && t.updatedAt.getTime() > sevenDaysAgo
+    (t) => t.taskType === "code-review" && t.updatedAt.getTime() > sinceMs
   );
 
-  for (const task of reviewTasks.slice(0, 20)) {
+  if (store.getReviewVoteCounts) {
+    return store.getReviewVoteCounts(reviewTasks.map((task) => task.taskId), since);
+  }
+
+  // Compatibility for stores without aggregate support (e.g. admin test doubles).
+  for (const task of reviewTasks) {
     try {
       const cycles = await store.getAgentCycles(task.taskId);
       for (const cycle of cycles) {
+        if (cycle.createdAt.getTime() <= sinceMs) continue;
         const score = cycle.result.metadata?.["score"];
         if (typeof score === "number") {
           if (score >= 2) votes.plus2++;
@@ -192,7 +212,7 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
       };
 
       const throughput = computeThroughput(tasks, deps.pollingIntervalMs);
-      const reviewVotes = await computeReviewVotes(tasks, deps.stateStore);
+      const reviewVotes = await computeReviewVotes(tasks, deps.stateStore, new Date(sevenDaysAgo));
 
       let dbSize = "—";
       try {
@@ -215,6 +235,21 @@ export function registerOverviewRoutes(router: Router, deps: OverviewRouteDeps):
     } catch (err) {
       log.error({ err }, "overview route failed");
       writeJson(res, 500, { error: "Failed to compute overview" });
+    }
+  }, { permission: "overview.read" });
+
+  // Review vote breakdown over the caller's readable tasks, optionally scoped
+  // to a trailing period via `?days=<n>` (omitted = all-time).
+  router.add("GET", "/api/admin/review-votes", async (req, res, _params) => {
+    try {
+      const allTasks = await deps.stateStore.getAllTasks();
+      const tasks = deps.projectStore
+        ? await filterTasksByReadAccess(req, allTasks, deps.projectStore)
+        : allTasks;
+      writeJson(res, 200, await computeReviewVotes(tasks, deps.stateStore, parseSinceDays(req.url)));
+    } catch (err) {
+      log.error({ err }, "review-votes route failed");
+      writeJson(res, 500, { error: "Failed to compute review votes" });
     }
   }, { permission: "overview.read" });
 

@@ -22,7 +22,7 @@ describe("TopBar tutorial launcher", () => {
         onLogout={() => undefined}
         taskCount={0}
         activeCount={0}
-        providerCount={0}
+        projectCount={0}
         pollingRunning={false}
       />,
     );
@@ -37,5 +37,31 @@ describe("TopBar tutorial launcher", () => {
 
     await user.click(tutorial);
     expect(onStartTutorial).toHaveBeenCalledOnce();
+  });
+
+  it("shows task, active, and project counters without integrations", () => {
+    const { container } = render(
+      <TopBar
+        view="overview"
+        setView={() => undefined}
+        theme="dark"
+        toggleTheme={() => undefined}
+        user={{ id: "user-1", username: "admin", role: "admin" }}
+        canViewConfig
+        onChangePassword={() => undefined}
+        onStartTutorial={() => undefined}
+        onLogout={() => undefined}
+        taskCount={7}
+        activeCount={2}
+        projectCount={3}
+        pollingRunning={false}
+      />,
+    );
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("7 tasks");
+    expect(text).toContain("2 active");
+    expect(text).toContain("3 projects");
+    expect(text).not.toContain("integrations");
   });
 });

@@ -250,6 +250,33 @@ export interface ApiProject {
   updatedAt: string;
 }
 
+/** Full project payload returned by `GET /api/admin/projects/:id`. */
+export interface ApiProjectDetail extends ApiProject {
+  ticketSource?: {
+    integration: { id: string; name: string; provider: string } | null;
+    ticketProjectKey: string;
+  } | null;
+  reviewConfig?: {
+    integration: { id: string; name: string; provider: string } | null;
+    repos: string[];
+    assignmentMode?: "manual" | "automatic";
+  } | null;
+  pushTargets?: Array<{
+    integrationId: string | null;
+    repoKey: string;
+    cloneUrl: string;
+    targetBranch: string;
+    role: "primary" | "submodule" | "dependency" | "related";
+    commitOrder: number;
+    localPath: string;
+  }>;
+  postCloneScript?: string;
+  gerritTopicOverride?: string | null;
+  useFullTicketUrlInCommits?: boolean;
+  postReviewLinkToTicket?: boolean;
+  reactToCiFailures?: boolean;
+}
+
 export interface ApiPrompt {
   id: string;
   label: string;

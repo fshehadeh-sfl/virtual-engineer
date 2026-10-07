@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ApiCostSummary, ApiModelUsageSummary } from "../../../src/admin/ui/types.js";
+import type { ApiCostSummary, ApiModelUsageSummary, ApiOverview } from "../../../src/admin/ui/types.js";
 
 const apiGet = vi.hoisted(() => vi.fn());
 
@@ -111,6 +111,59 @@ describe("Overview outcome cost dimensions", () => {
       if (path.includes("cost-summary")) return costSummary;
       if (path.includes("model-usage")) return modelUsageSummary;
       throw new Error(`Unexpected API path: ${path}`);
+    });
+  });
+
+  describe("Overview review vote periods", () => {
+    const overview: ApiOverview = {
+      stats: { activeTasks: 0, watchingTasks: 0, completedLast7d: 0, failedLast7d: 0, activeProviders: 0 },
+      throughput: [],
+      reviewVotes: { plus2: 7, plus1: 0, minus1: 0, minus2: 0 },
+      runtime: {
+        environment: "test", version: "1", uptime: "1m", dbSize: "1 KB",
+        maxCycles: 1, maxRetries: 1, pollingInterval: "30s", logLevel: "error",
+      },
+    };
+
+    it("maps each period to the endpoint, ignores stale responses, and shows errors", async () => {
+      let resolveOld: ((votes: ApiOverview["reviewVotes"]) => void) | undefined;
+      let resolveCurrent: ((votes: ApiOverview["reviewVotes"]) => void) | undefined;
+      apiGet.mockReset();
+      apiGet.mockImplementation((path: string) => {
+        if (path.includes("cost-summary")) return Promise.resolve(costSummary);
+        if (path.includes("model-usage")) return Promise.resolve(modelUsageSummary);
+        if (path === "/api/admin/review-votes?days=1") {
+          return new Promise<ApiOverview["reviewVotes"]>((resolve) => { resolveOld = resolve; });
+        }
+        if (path === "/api/admin/review-votes?days=30") {
+          return new Promise<ApiOverview["reviewVotes"]>((resolve) => { resolveCurrent = resolve; });
+        }
+        if (path === "/api/admin/review-votes") return Promise.reject(new Error("offline"));
+        throw new Error(`Unexpected API path: ${path}`);
+      });
+      render(<OverviewView
+        overview={overview} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined}
+      />);
+      const card = within(screen.getByText("Review votes").closest(".card")!);
+      const plus2Count = () => card.getByText("+2").parentElement?.lastElementChild?.textContent;
+
+      expect(plus2Count()).toBe("7");
+      fireEvent.click(card.getByRole("button", { name: "24h" }));
+      expect(card.getByText("Loading…")).toBeTruthy();
+      fireEvent.click(card.getByRole("button", { name: "30d" }));
+      await act(async () => resolveOld?.({ plus2: 100, plus1: 0, minus1: 0, minus2: 0 }));
+      expect(card.getByText("Loading…")).toBeTruthy();
+      await act(async () => resolveCurrent?.({ plus2: 30, plus1: 0, minus1: 0, minus2: 0 }));
+      expect(plus2Count()).toBe("30");
+      fireEvent.click(card.getByRole("button", { name: "All" }));
+      expect(await card.findByText("Failed to load review votes.")).toBeTruthy();
+      fireEvent.click(card.getByRole("button", { name: "7d" }));
+      expect(plus2Count()).toBe("7");
+      expect(apiGet).toHaveBeenCalledWith("/api/admin/review-votes?days=1");
+      expect(apiGet).toHaveBeenCalledWith("/api/admin/review-votes?days=30");
+      expect(apiGet).toHaveBeenCalledWith("/api/admin/review-votes");
+      expect(apiGet).not.toHaveBeenCalledWith("/api/admin/review-votes?days=7");
     });
   });
 

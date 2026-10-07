@@ -1207,6 +1207,13 @@ export interface AgentCycle {
   cost?: CycleCost;
 }
 
+export interface ReviewVoteCounts {
+  plus2: number;
+  plus1: number;
+  minus1: number;
+  minus2: number;
+}
+
 /** Aggregated token usage across a single agent cycle. */
 export interface CycleCostTokens {
   input: number;
@@ -1536,6 +1543,8 @@ export interface StateStore {
 
   getAgentCycles(taskId: TaskId): Promise<AgentCycle[]>;
   getAgentCycleEvents(taskId: TaskId, cycleNumber: number): Promise<AgentLogEvent[]>;
+  /** Count numeric scores for the specified readable review task IDs. */
+  getReviewVoteCounts(taskIds: TaskId[], since?: Date): Promise<ReviewVoteCounts>;
 
   /** Aggregate agent-cycle execution cost per project and instance-wide. */
   getCostSummary(options?: { since?: Date; projectId?: ProjectId }): Promise<CostSummary>;

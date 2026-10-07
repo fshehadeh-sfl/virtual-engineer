@@ -17,7 +17,7 @@ interface TopBarProps {
   onLogout: () => void;
   taskCount: number;
   activeCount: number;
-  providerCount: number;
+  projectCount: number;
   pollingRunning: boolean;
 }
 
@@ -31,7 +31,7 @@ const NAV: { id: ViewId; label: string; icon: string; configOnly?: boolean }[] =
 
 export function TopBar({
   view, setView, theme, toggleTheme, user, canViewConfig, onChangePassword, onStartTutorial, onLogout,
-  taskCount, activeCount, providerCount, pollingRunning,
+  taskCount, activeCount, projectCount, pollingRunning,
 }: TopBarProps) {
   const visibleNav = NAV.filter((n) => !n.configOnly || canViewConfig);
   return (
@@ -87,7 +87,9 @@ export function TopBar({
         <div style={{ display: "flex", alignItems: "center", gap: "14px", fontSize: "12.5px", color: "var(--text-faint)" }}>
           <span><b className="metric-val" style={{ color: "var(--text)", fontWeight: 600 }}>{taskCount}</b> tasks</span>
           <span><b className="metric-val" style={{ color: "var(--text)", fontWeight: 600 }}>{activeCount}</b> active</span>
-          <span><b className="metric-val" style={{ color: "var(--text)", fontWeight: 600 }}>{providerCount}</b> integrations</span>
+          {canViewConfig && (
+            <span><b className="metric-val" style={{ color: "var(--text)", fontWeight: 600 }}>{projectCount}</b> projects</span>
+          )}
         </div>
       </div>
 

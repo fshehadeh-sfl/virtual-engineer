@@ -12,34 +12,8 @@ import { ProjectStatisticsView } from "./ProjectStatisticsView.tsx";
 import { projectListConfig } from "./configListConfigs.ts";
 import { EMPTY_LIST_FILTER, applyListFilter } from "./listFilters.ts";
 import { FieldSelect, Modal } from "../../components/Modal.tsx";
-import type { ApiMe, ApiProject } from "../../types.ts";
+import type { ApiMe, ApiProject, ApiProjectDetail } from "../../types.ts";
 import type { ConfigSectionProps } from "./index.tsx";
-
-interface ApiProjectDetail extends ApiProject {
-  ticketSource?: {
-    integration: { id: string; name: string; type: string } | null;
-    ticketProjectKey: string;
-  } | null;
-  reviewConfig?: {
-    integration: { id: string; name: string; type: string } | null;
-    repos: string[];
-    assignmentMode?: "manual" | "automatic";
-  } | null;
-  pushTargets?: Array<{
-    integrationId: string;
-    repoKey: string;
-    cloneUrl: string;
-    targetBranch: string;
-    role: "primary" | "submodule" | "dependency" | "related";
-    commitOrder: number;
-    localPath: string;
-  }>;
-  postCloneScript?: string;
-  gerritTopicOverride?: string | null;
-  useFullTicketUrlInCommits?: boolean;
-  postReviewLinkToTicket?: boolean;
-  reactToCiFailures?: boolean;
-}
 
 export function canViewProjectStatistics(
   project: ApiProject,
@@ -81,6 +55,18 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
       .finally(() => { if (!cancelled) setBusy(null); });
     return () => { cancelled = true; };
   }, [editingId, navigate]);
+
+  const [projectDetail, setProjectDetail] = useState<ApiProjectDetail | null>(null);
+  const detailUpdatedAt = detailItem?.updatedAt;
+  useEffect(() => {
+    setProjectDetail(null);
+    if (!detailId) return;
+    let cancelled = false;
+    void api.get<{ project: ApiProjectDetail }>(`/api/admin/projects/${detailId}`)
+      .then(({ project }) => { if (!cancelled) setProjectDetail(project); })
+      .catch(() => { /* drawer falls back to list data */ });
+    return () => { cancelled = true; };
+  }, [detailId, detailUpdatedAt]);
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
@@ -140,6 +126,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
     return (
       <ProjectDrawer
         item={detailItem}
+        detail={projectDetail?.id === detailItem.id ? projectDetail : null}
         agents={agents}
         onClose={() => navigate({ section: "projects", mode: "list" })}
         {...(can("project.owner", detailItem.id, detailItem.ownerUserId ?? null)

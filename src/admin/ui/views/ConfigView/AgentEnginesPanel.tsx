@@ -71,6 +71,8 @@ export function AgentEnginesPanel({ canWrite, onDirtyChange }: AgentEnginesPanel
     }
   }
 
+  const lastRowStart = state.engines.length - (state.engines.length % 2 || 2);
+
   return (
     <>
       <div className="eyebrow" style={{ marginBottom: "8px" }}>Agent engines</div>
@@ -84,6 +86,7 @@ export function AgentEnginesPanel({ canWrite, onDirtyChange }: AgentEnginesPanel
             Rerun <span className="mono">./scripts/start.sh</span> to build or remove the pending engines.
           </div>
         )}
+        <div data-testid="agent-engines-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", columnGap: "24px" }}>
         {state.engines.map((engine, i) => {
           const status = engineStatus(engine);
           const locked = engine.isDefault || !canWrite || (engine.integrationCount > 0 && selected.has(engine.id));
@@ -92,7 +95,7 @@ export function AgentEnginesPanel({ canWrite, onDirtyChange }: AgentEnginesPanel
               key={engine.id}
               style={{
                 display: "flex", alignItems: "center", gap: "12px", padding: "10px 0",
-                borderBottom: i < state.engines.length - 1 ? "1px solid var(--border-soft)" : "none",
+                borderBottom: i < lastRowStart ? "1px solid var(--border-soft)" : "none",
               }}
             >
               <input
@@ -115,6 +118,7 @@ export function AgentEnginesPanel({ canWrite, onDirtyChange }: AgentEnginesPanel
             </label>
           );
         })}
+        </div>
         {error && <div style={{ color: "var(--danger)", fontSize: "12.5px", marginTop: "10px" }}>{error}</div>}
         {canWrite && (
           <div style={{ marginTop: "12px" }}>

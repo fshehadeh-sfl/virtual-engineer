@@ -51,6 +51,10 @@ const prompts: ApiPrompt[] = [
   },
 ];
 
+function selectIntegration(id: string): void {
+  fireEvent.change(screen.getByRole("combobox", { name: /Agent Integration/ }), { target: { value: id } });
+}
+
 describe("AgentFormModal model discovery", () => {
   beforeEach(() => {
     sessionStorage.clear();
@@ -111,6 +115,7 @@ describe("AgentFormModal model discovery", () => {
         onSaved={vi.fn()}
       />,
     );
+    selectIntegration("copilot-1");
 
     await waitFor(() => {
       expect(screen.getByRole("option", { name: /GPT-4o/ })).toBeTruthy();
@@ -145,6 +150,7 @@ describe("AgentFormModal model discovery", () => {
         onSaved={vi.fn()}
       />,
     );
+    selectIntegration("copilot-cached");
 
     expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
@@ -184,6 +190,7 @@ describe("AgentFormModal model discovery", () => {
       onClose={vi.fn()}
       onSaved={vi.fn()}
     />);
+    selectIntegration("copilot-cached");
 
     fireEvent.click(screen.getByRole("button", { name: /Provider settings/ }));
     const effort = screen.getByLabelText("Reasoning Effort") as HTMLSelectElement;
@@ -219,6 +226,7 @@ describe("AgentFormModal model discovery", () => {
         onSaved={vi.fn()}
       />,
     );
+    selectIntegration("copilot-1");
 
     await waitFor(() => {
       expect((screen.getByLabelText("Model") as HTMLInputElement).disabled).toBe(true);
@@ -254,6 +262,7 @@ describe("AgentFormModal model discovery", () => {
         onSaved={vi.fn()}
       />,
     );
+    selectIntegration("copilot-cached");
 
     expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
     fireEvent.change(screen.getByRole("combobox", { name: /Agent Integration/ }), {
@@ -297,6 +306,7 @@ describe("AgentFormModal model discovery", () => {
         onSaved={vi.fn()}
       />,
     );
+    selectIntegration("copilot-cached");
 
     expect(screen.getByRole("option", { name: "Claude Sonnet" })).toBeTruthy();
     failDiscovery = true;
@@ -348,5 +358,50 @@ describe("AgentFormModal model discovery", () => {
     const body = JSON.parse(String(request.body)) as { modelConfig: { providerOptions: Record<string, unknown> } };
     expect(body.modelConfig.providerOptions["reasoningEffort"]).toBe(expected);
     expect(body.modelConfig.providerOptions["otherOption"]).toBe("keep");
+  });
+
+  it("reveals integration-dependent fields only after an integration is chosen", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    render(<AgentFormModal
+      integrations={[cachedCopilotIntegration]}
+      plugins={[{ ...copilotPlugin, reviewStrategies: [{
+        id: "copilot_native", label: "Copilot native", description: "", experimental: false,
+        modelSelection: "provider", requiredSystemPromptId: "system",
+      }] }]}
+      prompts={prompts}
+      onClose={vi.fn()}
+      onSaved={vi.fn()}
+    />);
+    fireEvent.change(screen.getByRole("combobox", { name: /^Type/ }), { target: { value: "review" } });
+
+    expect(screen.getByRole("combobox", { name: /Agent Integration/ })).toHaveProperty("value", "");
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Review strategy/ })).toBeNull();
+
+    selectIntegration("copilot-cached");
+
+    expect(screen.getByLabelText("Model")).toBeTruthy();
+    const fields = Array.from(document.querySelectorAll("label")).map((label) => label.textContent ?? "");
+    const integrationIndex = fields.findIndex((text) => text.startsWith("Agent Integration"));
+    const strategyIndex = fields.findIndex((text) => text.startsWith("Review strategy"));
+    expect(strategyIndex).toBeGreaterThan(integrationIndex);
+  });
+
+  it.each([
+    { provider: "aider", hidden: "Git integration", visible: "Playwright" },
+    { provider: "goose", hidden: "Developer extension", visible: undefined },
+  ])("hides codegen-only $provider tool toggles for review agents", ({ provider, hidden, visible }) => {
+    const integration: ApiIntegration = { ...copilotIntegration, id: `${provider}-1`, provider, name: provider };
+    const plugin: ApiPlugin = { ...copilotPlugin, provider, name: provider };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ models: [] }), { status: 200 })));
+    render(<AgentFormModal integrations={[integration]} plugins={[plugin]} prompts={prompts} onClose={vi.fn()} onSaved={vi.fn()} />);
+    selectIntegration(integration.id);
+    expect(screen.getByText(hidden)).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /^Type/ }), { target: { value: "review" } });
+
+    expect(screen.queryByText(hidden)).toBeNull();
+    if (visible) expect(screen.getByText(visible)).toBeTruthy();
+    else expect(screen.queryByText("Tool authorization")).toBeNull();
   });
 });

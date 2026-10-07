@@ -39,6 +39,16 @@ afterEach(() => {
 });
 
 describe("AgentEnginesPanel", () => {
+  it("lays engines out in two columns without a border under the last row", async () => {
+    getMock.mockResolvedValue(state([engine("copilot"), engine("aider"), engine("goose")]));
+    render(<AgentEnginesPanel canWrite />);
+    await waitFor(() => expect(screen.getByLabelText("Goose")).toBeTruthy());
+    const grid = screen.getByTestId("agent-engines-grid");
+    expect(grid.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+    const rows = [...grid.children] as HTMLElement[];
+    expect(rows.map((row) => row.style.borderBottomStyle === "none" || row.style.borderBottom === "")).toEqual([false, false, true]);
+  });
+
   it("locks Copilot and engines still used by integrations", async () => {
     getMock.mockResolvedValue(state([
       engine("copilot"),

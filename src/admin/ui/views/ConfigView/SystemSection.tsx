@@ -162,7 +162,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
       </div>
 
       <div className="card" data-tour="system-settings-form" style={{ padding: "20px 18px", marginBottom: "22px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px", maxWidth: "360px" }}>
+        <div data-testid="system-settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "16px 24px", maxWidth: "760px" }}>
           <Field label="Polling interval (seconds)" hint="How often the ticket sources are polled for new work.">
             <FieldInput
               data-tour="system-settings"
@@ -230,11 +230,11 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
             />
           </Field>
 
-          {error && <div style={{ color: "var(--danger)", fontSize: "12.5px" }}>{error}</div>}
-          {saved && !dirty && <div style={{ color: "var(--accent-strong)", fontSize: "12.5px" }}>Settings saved.</div>}
+          {error && <div style={{ gridColumn: "1 / -1", color: "var(--danger)", fontSize: "12.5px" }}>{error}</div>}
+          {saved && !dirty && <div style={{ gridColumn: "1 / -1", color: "var(--accent-strong)", fontSize: "12.5px" }}>Settings saved.</div>}
 
           {canWrite && (
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+            <div style={{ gridColumn: "1 / -1", display: "flex", gap: "10px", alignItems: "center" }}>
               <button className="btn primary" data-tour="system-save" onClick={() => void handleSave()} disabled={saving || !dirty}>
                 {saving ? "Saving…" : "Save changes"}
               </button>

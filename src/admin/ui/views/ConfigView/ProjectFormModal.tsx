@@ -4,7 +4,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { ApiError, api } from "../../api.ts";
 import type { ApiAgent, ApiIntegration, ReviewAssignmentMode } from "../../types.ts";
-import { ProjectSkillSourcesField, buildSkillSourcesPayload, skillSourceToRow, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
+import { ProjectSkillSourcesField, buildSkillSourcesPayload, skillSourceToRow, supportsSkillSources, type SkillSource, type SkillSourceRow } from "./ProjectSkillSourcesField.tsx";
 import { RepositoryKeyField, RepositoryKeysField, TargetBranchField, TicketProjectKeyField } from "./ProjectFormFields.tsx";
 import {
   VENDOR_ORIGIN_LABELS,
@@ -53,16 +53,16 @@ interface ProjectFormProject {
   postReviewLinkToTicket?: boolean;
   reactToCiFailures?: boolean;
   ticketSource?: {
-    integration: { id: string; name: string; type: string } | null;
+    integration: { id: string; name: string; provider: string } | null;
     ticketProjectKey: string;
   } | null;
   reviewConfig?: {
-    integration: { id: string; name: string; type: string } | null;
+    integration: { id: string; name: string; provider: string } | null;
     repos: string[];
     assignmentMode?: ReviewAssignmentMode;
   } | null;
   pushTargets?: Array<{
-    integrationId: string;
+    integrationId: string | null;
     repoKey: string;
     cloneUrl: string;
     targetBranch: string;
@@ -198,7 +198,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         ticketProjectKey: project.ticketSource?.ticketProjectKey ?? "",
       });
       const nextTargets = (project.pushTargets ?? []).map((t) => ({
-        integrationId: t.integrationId,
+        integrationId: t.integrationId ?? "",
         repoKey: t.repoKey,
         cloneUrl: t.cloneUrl,
         targetBranch: t.targetBranch,
@@ -248,9 +248,44 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
     setPushTargets((prev) => prev.map((t, i) => i === idx ? { ...t, [key]: val } : t));
   };
 
+  const integrationProvider = (integrationId: string) =>
+    integrations.find((integration) => integration.id === integrationId)?.provider;
+
   const supportsReviewerEmails = (integrationId: string) => {
-    const provider = integrations.find((integration) => integration.id === integrationId)?.provider;
+    const provider = integrationProvider(integrationId);
     return provider === "gerrit" || provider === "gitlab";
+  };
+
+  const selectedAgent = agents.find((agent) => agent.id === agentId);
+  const selectedAgentProvider = selectedAgent?.integrationId ? integrationProvider(selectedAgent.integrationId) : undefined;
+  const showSkillSources = (isEditMode && agentId === (project.agentId ?? "") && skillSourceRows.length > 0)
+    || (selectedAgentProvider !== undefined && supportsSkillSources(selectedAgentProvider));
+  const showGerritTopic = (isEditMode && gerritTopicOverride.trim() !== "")
+    || pushTargets.some((target) => integrationProvider(target.integrationId) === "gerrit");
+  const hasTicketSource = ticketSource.integrationId !== "";
+
+  const updatePushTargetIntegration = (idx: number, integrationId: string) => {
+    if (!pushTargets.some((target, targetIndex) =>
+      targetIndex === idx
+        ? integrationProvider(integrationId) === "gerrit"
+        : integrationProvider(target.integrationId) === "gerrit"
+    )) setGerritTopicOverride("");
+    setPushTargets((prev) => prev.map((target, targetIndex) => {
+      if (targetIndex !== idx || target.integrationId === integrationId) return target;
+      if (!target.integrationId) return { ...target, integrationId };
+      const previousRepository = integrations.find((candidate) => candidate.id === target.integrationId)
+        ?.discoveredResources?.repositories?.find((candidate) => candidate.key === target.repoKey);
+      const cloneUrlFromPreviousRepository = previousRepository !== undefined
+        && (target.cloneUrl === previousRepository.cloneUrlHttp || target.cloneUrl === previousRepository.cloneUrlSsh);
+      return {
+        ...target,
+        integrationId,
+        repoKey: "",
+        cloneUrl: cloneUrlFromPreviousRepository ? "" : target.cloneUrl,
+        // Scanned rows keep their manifest revision; it does not come from the previous repository.
+        targetBranch: target.origin === "manual" ? "main" : target.targetBranch,
+      };
+    }));
   };
 
   const addPushTarget = () => {
@@ -278,6 +313,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
   };
 
   const removePushTarget = (idx: number) => {
+    if (!pushTargets.some((target, targetIndex) =>
+      targetIndex !== idx && integrationProvider(target.integrationId) === "gerrit"
+    )) setGerritTopicOverride("");
     setPushTargets((prev) => prev.filter((_, i) => i !== idx));
   };
 
@@ -450,7 +488,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           agentId,
           postCloneScript: postCloneScript || undefined,
           skillSources,
-          gerritTopicOverride: gerritTopicOverride.trim() || null,
+          gerritTopicOverride: showGerritTopic ? gerritTopicOverride.trim() || null : null,
           useFullTicketUrlInCommits,
           postReviewLinkToTicket,
           reactToCiFailures,
@@ -537,7 +575,10 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
         </Field>
 
         <Field label="Agent" required hint={`Select an enabled ${projectType} agent`}>
-          <FieldSelect data-tour="project-form-agent" value={agentId} onChange={(e) => setAgentId(e.target.value)}>
+          <FieldSelect data-tour="project-form-agent" value={agentId} onChange={(e) => {
+            if (e.target.value !== agentId) setSkillSourceRows([]);
+            setAgentId(e.target.value);
+          }}>
             {currentAgents.length === 0 && <option value="">— no {projectType} agents —</option>}
             {currentAgents.length > 0 && <option value="">— select —</option>}
             {currentAgents.map((a) => (
@@ -552,7 +593,11 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
               <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 12 }}>Ticket Source</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
                 <Field label="Ticketing Integration" required>
-                  <FieldSelect value={ticketSource.integrationId} onChange={(e) => setTicketSource((prev) => ({ ...prev, integrationId: e.target.value }))}>
+                  <FieldSelect value={ticketSource.integrationId} onChange={(e) => {
+                    setTicketSource({ integrationId: e.target.value, ticketProjectKey: "" });
+                    setUseFullTicketUrlInCommits(false);
+                    setPostReviewLinkToTicket(false);
+                  }}>
                     {ticketingIntegrations.length === 0 && <option value="">— no ticketing integrations —</option>}
                     {ticketingIntegrations.length > 0 && <option value="">— select —</option>}
                     {ticketingIntegrations.map((i) => (
@@ -560,13 +605,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                     ))}
                   </FieldSelect>
                 </Field>
-                <TicketProjectKeyField
-                  required
-                  integrationId={ticketSource.integrationId}
-                  integrations={integrations}
-                  value={ticketSource.ticketProjectKey}
-                  onChange={(v) => setTicketSource((prev) => ({ ...prev, ticketProjectKey: v }))}
-                />
+                {(hasTicketSource || ticketSource.ticketProjectKey !== "") && (
+                  <TicketProjectKeyField
+                    required
+                    integrationId={ticketSource.integrationId}
+                    integrations={integrations}
+                    value={ticketSource.ticketProjectKey}
+                    onChange={(v) => setTicketSource((prev) => ({ ...prev, ticketProjectKey: v }))}
+                  />
+                )}
               </div>
             </div>
 
@@ -589,7 +636,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                     )}
                   </div>
                   <Field label="VCS Integration" required>
-                    <FieldSelect value={t.integrationId} onChange={(e) => updatePushTarget(idx, "integrationId", e.target.value)}>
+                    <FieldSelect value={t.integrationId} onChange={(e) => updatePushTargetIntegration(idx, e.target.value)}>
                       {vcsIntegrations.length === 0 && <option value="">— no VCS integrations —</option>}
                       {vcsIntegrations.length > 0 && <option value="">— select —</option>}
                       {vcsIntegrations.map((i) => (
@@ -597,7 +644,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                       ))}
                     </FieldSelect>
                   </Field>
-                  <RepositoryKeyField
+                  {(t.integrationId || t.repoKey) && <RepositoryKeyField
                     label="Repository Key"
                     required
                     dataTour="project-repository-key"
@@ -618,7 +665,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                             : t2.targetBranch,
                         }));
                     }}
-                  />
+                  />}
                   <Field label="Clone URL" required hint={repositoryResolutionMessages[t.cloneUrl.trim()]}>
                     <FieldInput
                       value={t.cloneUrl}
@@ -757,12 +804,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                       </div>
                     );
                   })()}
-                  <TargetBranchField
-                    integrationId={t.integrationId}
-                    repoKey={t.repoKey}
-                    value={t.targetBranch}
-                    onChange={(v) => updatePushTarget(idx, "targetBranch", v)}
-                  />
+                  {t.repoKey && (
+                    <TargetBranchField
+                      integrationId={t.integrationId}
+                      repoKey={t.repoKey}
+                      value={t.targetBranch}
+                      onChange={(v) => updatePushTarget(idx, "targetBranch", v)}
+                    />
+                  )}
                   {supportsReviewerEmails(t.integrationId) && (
                     <Field label="Reviewer Emails" hint="Up to 20 comma-separated emails. Gerrit adds them directly; GitLab matches visible profile emails.">
                       <FieldInput value={t.reviewerEmails} placeholder="alice@example.com, bob@example.com" onChange={(e) => updatePushTarget(idx, "reviewerEmails", e.target.value)} />
@@ -802,15 +851,15 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
             )}
 
             <div data-tour="project-options" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
+              {showGerritTopic && <Field label="Custom Gerrit Topic" hint="Overrides the ticket-derived topic (e.g. VE-<taskId>-<ticket-title>) for all changes pushed from this project. Leave blank to keep the default per-ticket topic.">
                 <FieldInput
                   value={gerritTopicOverride}
                   placeholder="my-custom-topic"
                   onChange={(e) => setGerritTopicOverride(e.target.value)}
                 />
-              </Field>
+              </Field>}
 
-              <Field
+              {(hasTicketSource || useFullTicketUrlInCommits) && <Field
                 label="Ticket URL in Commits"
                 hint="When enabled, agent commit messages include the full ticket URL instead of the short #id form."
               >
@@ -823,9 +872,9 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   />
                   <span>Include full ticket URL in commit message footers</span>
                 </label>
-              </Field>
+              </Field>}
 
-              <Field
+              {(hasTicketSource || postReviewLinkToTicket) && <Field
                 label="Post Review Link to Ticket"
                 hint="When enabled, VE adds a note on the source ticket with the Gerrit/review URL(s) once the first cycle opens a review. Off by default — most teams already surface this via standard VCS/ticket integrations."
               >
@@ -838,7 +887,7 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                   />
                   <span>Post a ticket comment with the review link(s)</span>
                 </label>
-              </Field>
+              </Field>}
 
               <Field
                 label="React to CI Failures"
@@ -862,7 +911,14 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
           <div data-tour="project-review-config" style={{ display: "flex", flexDirection: "column", gap: 12, padding: "14px 16px", background: "var(--panel-2)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-soft)" }}>
             <div style={{ fontSize: "13px", fontWeight: 600, marginBottom: 2 }}>Review Configuration</div>
             <Field label="Review Integration" required>
-              <FieldSelect value={reviewIntegrationId} onChange={(e) => setReviewIntegrationId(e.target.value)}>
+              <FieldSelect
+                value={reviewIntegrationId}
+                onChange={(e) => {
+                  setReviewIntegrationId(e.target.value);
+                  setReviewRepoKeys([]);
+                  setReviewAssignmentMode("manual");
+                }}
+              >
                 {reviewIntegrations.length === 0 && <option value="">— no review integrations —</option>}
                 {reviewIntegrations.length > 0 && <option value="">— select —</option>}
                 {reviewIntegrations.map((i) => (
@@ -870,34 +926,40 @@ export function ProjectFormModal({ agents, integrations, project, onClose, onSav
                 ))}
               </FieldSelect>
             </Field>
-            <Field label="Reviewer assignment" hint="Manual waits for VE to be added as a reviewer. Automatic adds VE on each new revision.">
-              <FieldSelect
-                value={reviewAssignmentMode}
-                onChange={(event) => setReviewAssignmentMode(event.target.value as ReviewAssignmentMode)}
-              >
-                <option value="manual">Manual assignment</option>
-                {reviewAssignmentModes.includes("automatic") && (
-                  <option value="automatic">Automatic assignment</option>
-                )}
-              </FieldSelect>
-            </Field>
-            <RepositoryKeysField
-              label="Repository Keys"
-              required
-              integrationId={reviewIntegrationId}
-              integrations={integrations}
-              value={reviewRepoKeys}
-              onChange={setReviewRepoKeys}
-              hint="Select repository keys after discovery"
-            />
+            {(reviewIntegrationId || reviewRepoKeys.length > 0) && (
+              <>
+                <Field label="Reviewer assignment" hint="Manual waits for VE to be added as a reviewer. Automatic adds VE on each new revision.">
+                  <FieldSelect
+                    value={reviewAssignmentMode}
+                    onChange={(event) => setReviewAssignmentMode(event.target.value as ReviewAssignmentMode)}
+                  >
+                    <option value="manual">Manual assignment</option>
+                    {reviewAssignmentModes.includes("automatic") && (
+                      <option value="automatic">Automatic assignment</option>
+                    )}
+                  </FieldSelect>
+                </Field>
+                <RepositoryKeysField
+                  label="Repository Keys"
+                  required
+                  integrationId={reviewIntegrationId}
+                  integrations={integrations}
+                  value={reviewRepoKeys}
+                  onChange={setReviewRepoKeys}
+                  hint="Select repository keys after discovery"
+                />
+              </>
+            )}
           </div>
         )}
 
-        <ProjectSkillSourcesField
-          rows={skillSourceRows}
-          setRows={setSkillSourceRows}
-          projectId={project?.id}
-        />
+        {showSkillSources && (
+          <ProjectSkillSourcesField
+            rows={skillSourceRows}
+            setRows={setSkillSourceRows}
+            projectId={project?.id}
+          />
+        )}
 
         <Field label="Post-Clone Script" hint="Optional shell script to run after repo clone (before agent runs)">
           <FieldTextarea

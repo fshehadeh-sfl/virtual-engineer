@@ -349,6 +349,7 @@ export const CONFIG_SECTION_TOURS: Record<ConfigSectionId, TourStep[]> = {
       body: "Optional skill sources are staged host-side into the provider's native skill directory before the agent runs.",
       placement: "right",
       advance: "continue",
+      optional: true,
     },
     {
       target: '[data-tour="project-post-clone"]',

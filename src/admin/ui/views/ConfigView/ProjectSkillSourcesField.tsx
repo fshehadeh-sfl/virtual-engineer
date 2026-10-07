@@ -44,6 +44,13 @@ function newSkillSourceRowId(): string {
   ).join("-");
 }
 
+// Mirrors providerFromAdapterName() in src/workspace/openShellWorkspaceRunner.ts: other engines skip skill installation.
+const SKILL_SOURCE_PROVIDERS = new Set(["copilot", "claude", "goose", "codex", "opencode"]);
+
+export function supportsSkillSources(provider: string): boolean {
+  return SKILL_SOURCE_PROVIDERS.has(provider);
+}
+
 export function emptySkillSourceRow(): SkillSourceRow {
   return { id: newSkillSourceRowId(), source: "", skillsText: "", installAll: false, sshUser: "", sshPort: "", sshKeyPath: "", sshKnownHostsPath: "", availableSkills: [], listing: false, listError: null };
 }
@@ -154,7 +161,7 @@ export function ProjectSkillSourcesField({
   return (
     <Field
       label="Additional Skills"
-      hint="Add optional skills from trusted remote repositories for Copilot, Claude, and Goose projects. Configured sources are installed host-side before each agent run."
+      hint="Add optional skills from trusted remote repositories for Copilot, Claude, Goose, Codex, and OpenCode projects. Configured sources are installed host-side before each agent run."
     >
       <div data-tour="project-skill-sources" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
