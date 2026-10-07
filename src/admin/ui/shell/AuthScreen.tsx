@@ -170,7 +170,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             )}
 
             <form onSubmit={(e) => void handleSubmit(e)}>
+              <label htmlFor="auth-username" className="field-label">Username</label>
               <input
+                id="auth-username"
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -179,7 +181,9 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 autoFocus={mode === "login"}
                 style={inputStyle}
               />
+              <label htmlFor="auth-password" className="field-label">Password</label>
               <PasswordField
+                id="auth-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={mode === "setup" ? "Password (min. 8 characters)…" : "Password…"}
@@ -206,17 +210,22 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
                 );
               })()}
               {mode === "setup" && (
-                <PasswordField
-                  value={confirm}
-                  onChange={(e) => setConfirm(e.target.value)}
-                  placeholder="Confirm password…"
-                  autoComplete="new-password"
-                  style={inputStyle}
-                />
+                <>
+                  <label htmlFor="auth-confirm" className="field-label">Confirm password</label>
+                  <PasswordField
+                    id="auth-confirm"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    placeholder="Confirm password…"
+                    autoComplete="new-password"
+                    style={inputStyle}
+                  />
+                </>
               )}
 
               {error && (
                 <div
+                  role="alert"
                   style={{
                     fontSize: "12.5px", color: "var(--danger)", marginBottom: "12px",
                     display: "flex", alignItems: "center", gap: "6px",

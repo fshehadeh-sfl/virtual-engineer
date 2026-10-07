@@ -1667,12 +1667,19 @@ describe("adminServer PBAC project scoping", () => {
 
     // Task list is filtered to project A only.
     const list = await fetch(`${baseUrl}/api/admin/tasks`, authed(user.token));
-    const body = (await list.json()) as { tasks: Array<{ ticketId: string }> };
+    const body = (await list.json()) as { tasks: Array<{ ticketId: string; permissions: { operate: boolean; delete: boolean } }> };
     expect(body.tasks.map((t) => t.ticketId)).toEqual(["T-A"]);
+    expect(body.tasks[0]?.permissions).toEqual({ operate: false, delete: false });
 
     // Detail for the out-of-scope task B is forbidden; A is allowed.
-    expect((await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token))).status).toBe(200);
+    const taskDetail = await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(user.token));
+    expect(taskDetail.status).toBe(200);
+    expect((await taskDetail.json()) as { task: { permissions: { operate: boolean; delete: boolean } } })
+      .toMatchObject({ task: { permissions: { operate: false, delete: false } } });
     expect((await fetch(`${baseUrl}/api/admin/tasks/${taskB}`, authed(user.token))).status).toBe(403);
+    const adminTask = await fetch(`${baseUrl}/api/admin/tasks/${taskA}`, authed(admin.token));
+    expect((await adminTask.json()) as { task: { permissions: { operate: boolean; delete: boolean } } })
+      .toMatchObject({ task: { permissions: { operate: true, delete: true } } });
     for (const taskId of [taskA, taskB]) {
       await store.saveAgentCycle(makeTaskId(taskId), 1, {
         status: "failed", modifiedFiles: [], summary: "Invalid worker JSON", agentLogs: "masked output",

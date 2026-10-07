@@ -1,7 +1,8 @@
-import { cloneElement, isValidElement, useEffect, useId, type ReactElement } from "react";
+import { cloneElement, isValidElement, useEffect, useId, useRef, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icon.tsx";
 import { useConfigPageSurface } from "../views/ConfigView/ConfigPageSurface.tsx";
+import { useDialogFocus } from "./dialogFocus.ts";
 
 interface ModalProps {
   title: string;
@@ -16,19 +17,18 @@ interface ModalProps {
 
 export function Modal({ title, sub, onClose, children, footer, wide, width }: ModalProps) {
   const isPage = useConfigPageSurface();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(!isPage, dialogRef, onClose);
 
   // Esc + scroll lock
   useEffect(() => {
     if (isPage) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
     return () => {
       document.body.style.overflow = prev;
-      window.removeEventListener("keydown", handler);
     };
-  }, [isPage, onClose]);
+  }, [isPage]);
 
   const maxW = width ?? (wide ? 760 : 540);
 
@@ -58,6 +58,7 @@ export function Modal({ title, sub, onClose, children, footer, wide, width }: Mo
     >
       <div
         className="modal"
+        ref={dialogRef}
         style={{ maxWidth: maxW }}
         role="dialog"
         aria-modal="true"

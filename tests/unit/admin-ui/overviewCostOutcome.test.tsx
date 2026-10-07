@@ -187,4 +187,62 @@ describe("Overview outcome cost dimensions", () => {
     expect(screen.getAllByText("Done")).toHaveLength(3);
     expect(screen.getAllByText("Failed")).toHaveLength(1);
   });
+
+  it("opens the selected activity and does not mislabel unavailable totals", async () => {
+    const onNavigate = vi.fn();
+    render(
+      <OverviewView
+        overview={null}
+        tasks={[{
+          taskId: "active-1", taskType: "code-gen", ticketId: "T-1",
+          ticketSourceLabel: "github", ticketTitle: "Target task", ticketDescription: "",
+          state: "AGENT_RUNNING", gerritChangeId: null, currentPatchset: 0,
+          reviewedPatchset: null, cycleCount: 0, failureReason: null,
+          ticketUrl: null, reviewUrl: null, displayId: null,
+          createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+        }]}
+        providers={[]}
+        activeIntegrationCount={null}
+        canViewConfig={false}
+        pollingIntervalMs={30000}
+        onNavigate={onNavigate}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Target task/ }));
+    expect(onNavigate).toHaveBeenCalledWith("tasks", "active-1");
+    expect(screen.queryByText("0 active integrations")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Manage/ })).toBeNull();
+    expect(screen.queryByText("Completed · 7d")?.closest(".card")?.textContent).toContain("—");
+    expect(screen.queryByText("Failed · 7d")?.closest(".card")?.textContent).toContain("—");
+  });
+
+  it("does not show figures from the previous cost or model period", async () => {
+    apiGet.mockImplementation((path: string) => {
+      if (path === "/api/admin/cost-summary?days=1" || path === "/api/admin/model-usage?days=1") {
+        return new Promise(() => undefined);
+      }
+      if (path.includes("cost-summary")) return Promise.resolve(costSummary);
+      if (path.includes("model-usage")) return Promise.resolve(modelUsageSummary);
+      throw new Error(`Unexpected path: ${path}`);
+    });
+    render(
+      <OverviewView
+        overview={null} tasks={[]} providers={[]} activeIntegrationCount={0}
+        pollingIntervalMs={30000} onNavigate={() => undefined}
+      />,
+    );
+    const costCard = within(screen.getByText("AI cost").closest(".card")!);
+    const modelCard = within(screen.getByText("Model usage").closest(".card")!);
+    await waitFor(() => expect(costCard.getByText("instance total")).toBeTruthy());
+    await waitFor(() => expect(modelCard.getByTitle("claude-sonnet · Done · 1 runs")).toBeTruthy());
+
+    fireEvent.click(costCard.getByRole("button", { name: "24h" }));
+    fireEvent.click(modelCard.getByRole("button", { name: "24h" }));
+
+    expect(costCard.getByText("Loading…")).toBeTruthy();
+    expect(modelCard.getByText("Loading…")).toBeTruthy();
+    expect(costCard.queryByText("instance total")).toBeNull();
+    expect(modelCard.queryByTitle("claude-sonnet · Done · 1 runs")).toBeNull();
+  });
 });

@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./Icon.tsx";
 import { TONE, type ToneKey } from "../states.ts";
 import { useConfigPageSurface } from "../views/ConfigView/ConfigPageSurface.tsx";
+import { useDialogFocus } from "./dialogFocus.ts";
 
 /* ─── Shell ──────────────────────────────────────────────────────────── */
 
@@ -17,6 +18,8 @@ interface DrawerProps {
 
 export function Drawer({ eyebrow, title, glyph, onClose, footer, children }: DrawerProps) {
   const isPage = useConfigPageSurface();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(!isPage, dialogRef, onClose);
 
   // Esc key + scroll lock
   useEffect(() => {
@@ -24,14 +27,11 @@ export function Drawer({ eyebrow, title, glyph, onClose, footer, children }: Dra
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     document.body.classList.add("ve-drawer-open");
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
     return () => {
       document.body.style.overflow = prev;
       document.body.classList.remove("ve-drawer-open");
-      window.removeEventListener("keydown", onKey);
     };
-  }, [isPage, onClose]);
+  }, [isPage]);
 
   if (isPage) {
     return (
@@ -57,7 +57,7 @@ export function Drawer({ eyebrow, title, glyph, onClose, footer, children }: Dra
       className="drawer-scrim"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="drawer" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="drawer" ref={dialogRef} role="dialog" aria-modal="true" aria-label={title}>
         {/* header */}
         <div className="drawer-head">
           {glyph && <div className="drawer-glyph">{glyph}</div>}

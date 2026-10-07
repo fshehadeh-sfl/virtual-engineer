@@ -85,7 +85,7 @@ export const TERM_DIVERGE: Partial<Record<TaskState, TaskState>> = {
 /* Dashboard workflow bucket, mirrored from src/domain/tasks.ts (not importable across the UI build boundary). */
 type WorkflowBucket = "active" | "watching" | "done" | "failed";
 
-function classifyWorkflowBucket(state: TaskState): WorkflowBucket {
+export function classifyWorkflowBucket(state: TaskState): WorkflowBucket {
   switch (state) {
     case "DETECTED":
     case "CONTEXT_BUILDING":

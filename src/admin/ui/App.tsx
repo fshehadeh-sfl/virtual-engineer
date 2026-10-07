@@ -119,6 +119,7 @@ export function App() {
     }));
   }, [configSection, configWorkflowActive, pendingTutorialKey, view]);
   const dataGenerationRef = useRef(0);
+  const loadRequestRef = useRef(0);
   // When the server bootstrap data is unavailable (Vite dev mode), requiresAuth defaults to
   // false and authenticated starts as true — skipping the setup screen. This effect catches
   // that case: if the server reports no users exist, force the setup screen regardless.
@@ -167,6 +168,8 @@ export function App() {
   const [status,       setStatus]       = useState<ApiStatus | null>(null);
   const [config,       setConfig]       = useState<ApiConfig["config"] | null>(null);
   const [overview,     setOverview]     = useState<ApiOverview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
 
   const resetLoadedData = useCallback(() => {
     dataGenerationRef.current += 1;
@@ -181,6 +184,8 @@ export function App() {
     setStatus(null);
     setConfig(null);
     setOverview(null);
+    setLoadError(null);
+    setIntegrationsLoaded(false);
   }, []);
 
   const handleLoggedOut = useCallback(() => {
@@ -199,20 +204,31 @@ export function App() {
 
   const loadAll = useCallback(async () => {
     const generation = dataGenerationRef.current;
+    const requestId = ++loadRequestRef.current;
+    setLoadError(null);
     // Viewer-safe reads — always fetched.
     const baseResults = await Promise.allSettled([
       api.get<{ tasks:    ApiTask[] }>("/api/admin/tasks"),
       api.get<ApiStatus>("/api/admin/status"),
       api.get<ApiConfig>("/api/admin/config"),
-      api.get<ApiOverview>("/api/admin/overview").catch(() => null),
+      api.get<ApiOverview>("/api/admin/overview"),
     ]);
-    if (generation !== dataGenerationRef.current) return;
+    if (generation !== dataGenerationRef.current || requestId !== loadRequestRef.current) return;
     if (baseResults[0].status === "fulfilled") setTasks(baseResults[0].value.tasks);
     if (baseResults[1].status === "fulfilled") setStatus(baseResults[1].value);
     if (baseResults[2].status === "fulfilled") setConfig(baseResults[2].value.config);
-    if (baseResults[3].status === "fulfilled" && baseResults[3].value) setOverview(baseResults[3].value);
+    if (baseResults[3].status === "fulfilled") setOverview(baseResults[3].value);
+    const failed = ["tasks", "status", "configuration", "overview"]
+      .filter((_, index) => {
+        const result = baseResults[index];
+        return result?.status === "rejected"
+          && !(result.reason instanceof ApiError && result.reason.status === 403);
+      });
 
-    if (!canViewConfig) return;
+    if (!canViewConfig) {
+      if (failed.length > 0) setLoadError(`Could not load ${failed.join(", ")}.`);
+      return;
+    }
     const results = await Promise.allSettled([
       api.get<{ providers: ApiProvider[] }>("/api/admin/providers"),
       api.get<{ integrations: ApiIntegration[] }>("/api/admin/integrations"),
@@ -223,14 +239,24 @@ export function App() {
       api.get<{ apps: ApiOAuthApp[] }>("/api/admin/oauth-apps"),
     ]);
 
-    if (generation !== dataGenerationRef.current) return;
+    if (generation !== dataGenerationRef.current || requestId !== loadRequestRef.current) return;
     if (results[0].status === "fulfilled") setProviders(results[0].value.providers);
-    if (results[1].status === "fulfilled") setIntegrations(results[1].value.integrations);
+    if (results[1].status === "fulfilled") {
+      setIntegrations(results[1].value.integrations);
+      setIntegrationsLoaded(true);
+    }
     if (results[2].status === "fulfilled") setPlugins(results[2].value.plugins);
     if (results[3].status === "fulfilled") setAgents(results[3].value.agents);
     if (results[4].status === "fulfilled") setProjects(results[4].value.projects);
     if (results[5].status === "fulfilled") setPrompts(results[5].value.prompts);
     if (results[6].status === "fulfilled") setOauthApps(results[6].value.apps);
+    const names = ["providers", "integrations", "plugins", "agents", "projects", "prompts", "OAuth apps"];
+    for (const [index, result] of results.entries()) {
+      if (result.status === "rejected" && !(result.reason instanceof ApiError && result.reason.status === 403)) {
+        failed.push(names[index] ?? "configuration data");
+      }
+    }
+    if (failed.length > 0) setLoadError(`Could not load ${failed.join(", ")}.`);
   }, [canViewConfig]);
 
   useEffect(() => {
@@ -294,15 +320,15 @@ export function App() {
   const configWorkflowEnabled = currentUser !== null
     && shouldEnableConfigWorkflow(configSection, configWorkflowActive, tutorialLaunch?.key ?? null);
 
-  function requestViewChange(nextView: ViewId): boolean {
+  function requestViewChange(nextView: ViewId, taskId?: string): boolean {
     if (view === "config" && nextView !== "config" && configNavigationGuardRef.current?.() === false) return false;
     setView(nextView);
-    window.location.hash = nextView;
+    window.location.hash = nextView === "tasks" && taskId ? `tasks/${taskId}` : nextView;
     return true;
   }
 
-  function handleNavigate(v: "tasks" | "config") {
-    requestViewChange(v);
+  function handleNavigate(v: "tasks" | "config", taskId?: string) {
+    requestViewChange(v, taskId);
   }
 
   function handleStartTutorial() {
@@ -372,13 +398,20 @@ export function App() {
           projectCount={projects.filter((p) => p.enabled).length}
           pollingRunning={status?.polling.running ?? false}
         />
+        {loadError && (
+          <div role="alert" style={{ padding: "8px 16px", background: "var(--danger-soft)", color: "var(--danger)", display: "flex", alignItems: "center", gap: "12px" }}>
+            {loadError}
+            <button className="btn sm" onClick={() => void loadAll()}>Retry loading</button>
+          </div>
+        )}
         <div className="app-workspace" style={{ flex: 1, overflow: "hidden", display: "flex" }}>
           {effectiveView === "overview" && (
             <OverviewView
               overview={overview}
               tasks={tasks}
               providers={providers}
-              activeIntegrationCount={enabledIntegrations}
+              activeIntegrationCount={canViewConfig && integrationsLoaded ? enabledIntegrations : null}
+              canViewConfig={canViewConfig}
               pollingIntervalMs={status?.polling.intervalMs ?? 30000}
               onNavigate={handleNavigate}
             />

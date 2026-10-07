@@ -30,12 +30,15 @@ interface TaskDetailProps {
 type TabId = "cycles" | "timeline" | "logs";
 
 export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
-  const { canOperate } = useCurrentUser();
+  const { can } = useCurrentUser();
   const [tab, setTab] = useState<TabId>("cycles");
   const [taskDetails, setTaskDetails] = useState<ApiTask | null>(null);
   const [cycles, setCycles] = useState<ApiCycle[] | null>(null);
   const [transitions, setTransitions] = useState<ApiTransition[] | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState(false);
+  const [cyclesError, setCyclesError] = useState(false);
+  const [transitionsError, setTransitionsError] = useState(false);
   const currentTaskIdRef = useRef(task.taskId);
   const cycleRequestSequence = useRef(0);
   const cycleRequestInFlight = useRef<TaskRequestIdentity | null>(null);
@@ -50,14 +53,13 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
       .then((r) => {
         if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, cycleRequestSequence.current)) {
           setCycles(r.cycles);
+          setCyclesError(false);
         }
       })
       .catch(() => {
-        if (
-          clearOnError &&
-          isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, cycleRequestSequence.current)
-        ) {
-          setCycles([]);
+        if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, cycleRequestSequence.current)) {
+          if (clearOnError) setCycles([]);
+          setCyclesError(true);
         }
       })
       .finally(() => {
@@ -69,15 +71,19 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
 
   const loadDetails = useCallback((id: string, fallbackTask: ApiTask) => {
     const requestSequence = ++detailRequestSequence.current;
+    setDetailError(false);
+    setTransitionsError(false);
     void api.get<{ task: ApiTask }>(`/api/admin/tasks/${id}`)
       .then((r) => {
         if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
           setTaskDetails(r.task);
+          setDetailError(false);
         }
       })
       .catch(() => {
         if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
           setTaskDetails(fallbackTask);
+          setDetailError(true);
         }
       });
     loadCycles(id, true);
@@ -85,11 +91,13 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
       .then((r) => {
         if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
           setTransitions(r.transitions);
+          setTransitionsError(false);
         }
       })
       .catch(() => {
         if (isCurrentTaskRequest(id, requestSequence, currentTaskIdRef.current, detailRequestSequence.current)) {
           setTransitions([]);
+          setTransitionsError(true);
         }
       });
   }, [loadCycles]);
@@ -100,6 +108,9 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
     setTaskDetails(null);
     setCycles(null);
     setTransitions(null);
+    setDetailError(false);
+    setCyclesError(false);
+    setTransitionsError(false);
     return () => {
       cycleRequestSequence.current += 1;
       detailRequestSequence.current += 1;
@@ -111,6 +122,8 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
     cycleRequestInFlight.current = null;
     setCycles(null);
     setTransitions(null);
+    setCyclesError(false);
+    setTransitionsError(false);
     loadDetails(task.taskId, task);
   }, [loadDetails, task.taskId, task.state, task.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps -- selected task fields control full reloads
 
@@ -122,6 +135,7 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
 
   async function doAction(path: string, method: "PATCH" | "POST" | "DELETE") {
     const actionTaskId = task.taskId;
+    if (method === "DELETE" && !window.confirm(`Delete task "${displayTitle}"? This cannot be undone.`)) return;
     setActionError(null);
     try {
       await api[method === "PATCH" ? "patch" : method === "POST" ? "post" : "delete"](path);
@@ -143,6 +157,8 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
   const taskWithDetails = taskDetails ?? task;
   const running   = isActiveState(taskWithDetails.state);
   const terminal  = isTerminalState(taskWithDetails.state);
+  const mayOperate = taskWithDetails.permissions?.operate ?? can("task.operate");
+  const mayDelete = taskWithDetails.permissions?.delete ?? can("task.delete");
   const loadedCycleCount = cycles ? Math.max(cycles.length, ...cycles.map((cycle) => cycle.cycleNumber)) : 0;
   const effectiveCycleCount = Math.max(taskWithDetails.cycleCount, loadedCycleCount);
   const repoReviewLinks = (taskWithDetails.changesPerRepo ?? []).filter((c) => typeof c.reviewUrl === "string" && c.reviewUrl.length > 0);
@@ -242,41 +258,45 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
               <StatePill state={taskWithDetails.state} />
               {task.waitingForAgentSlot && <Tag tone="warn">Queued</Tag>}
               {/* action bar */}
-              {canOperate && (
+              {(mayOperate || (mayDelete && terminal)) && (
                 <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                  {running && (
+                  {mayOperate && running && (
                     <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                   )}
-                  {!terminal && !running && (
+                  {mayOperate && !terminal && !running && (
                     <>
                       <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                       <button className="iconbtn danger" title="Abandon" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/abandon`, "POST")}><Icon name="x" size={15} /></button>
                     </>
                   )}
-                  {terminal && taskWithDetails.state !== "MERGED" && (
+                  {mayOperate && terminal && taskWithDetails.state !== "MERGED" && (
                     <button className="iconbtn" title="Retry" onClick={() => void doAction(`/api/admin/tasks/${task.taskId}/retry`, "POST")}><Icon name="refresh" size={15} /></button>
                   )}
-                  <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />
-                  <button
-                    className="iconbtn danger"
-                    title="Delete task"
-                    onClick={() => void doAction(`/api/admin/tasks/${task.taskId}`, "DELETE")}
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
+                  {mayDelete && terminal && (
+                    <>
+                      {mayOperate && <div style={{ width: 1, height: 20, background: "var(--border-soft)", margin: "0 3px" }} />}
+                      <button
+                        className="iconbtn danger"
+                        title="Delete task"
+                        onClick={() => void doAction(`/api/admin/tasks/${task.taskId}`, "DELETE")}
+                      >
+                        <Icon name="trash" size={15} />
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
           </div>
 
           {/* state pipeline */}
-          <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-soft)", paddingTop: "4px" }}>
+          <div style={{ marginTop: "10px", borderTop: "1px solid var(--border-soft)", paddingTop: "4px", overflowX: "auto" }}>
             <StatePipeline task={taskWithDetails} />
           </div>
         </div>
 
         {/* meta strip */}
-        <div className="card" style={{ display: "grid", gridTemplateColumns: `repeat(${metaCells.length}, 1fr)`, padding: 0 }}>
+        <div className="card" style={{ display: "grid", gridTemplateColumns: `repeat(${metaCells.length}, minmax(125px, 1fr))`, overflowX: "auto", padding: 0 }}>
           {metaCells.map((m, i) => (
             <div key={m.label} style={{ padding: "14px 16px", borderRight: i < metaCells.length - 1 ? "1px solid var(--border-soft)" : "none" }}>
               <Meta label={m.label} mono={m.mono}>{m.value}</Meta>
@@ -304,8 +324,14 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
         )}
 
         {actionError && (
-          <div style={{ color: "var(--danger)", fontSize: "12.5px", padding: "8px 0" }}>
+          <div role="alert" style={{ color: "var(--danger)", fontSize: "12.5px", padding: "8px 0" }}>
             {actionError}
+          </div>
+        )}
+        {detailError && (
+          <div role="alert" style={{ color: "var(--danger)" }}>
+            Failed to load task details. Showing the last known summary.
+            <button className="btn sm" onClick={() => loadDetails(task.taskId, task)}>Retry</button>
           </div>
         )}
 
@@ -317,14 +343,18 @@ export function TaskDetail({ task, onRefresh, onDeleted }: TaskDetailProps) {
         {/* tab body */}
         <TabPanel>
           {tab === "cycles" && (
-            cycles === null
+            cyclesError
+              ? <div role="alert">Failed to load agent cycles. <button className="btn sm" onClick={() => loadCycles(task.taskId, true)}>Retry</button></div>
+              : cycles === null
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : cycles.length === 0
                 ? <div className="placeholder" style={{ minHeight: "120px" }}>No agent cycles yet.</div>
                 : <AgentCycles key={cycles.length} cycles={cycles} />
           )}
           {tab === "timeline" && (
-            transitions === null
+            transitionsError
+              ? <div role="alert">Failed to load state timeline. <button className="btn sm" onClick={() => loadDetails(task.taskId, task)}>Retry</button></div>
+              : transitions === null
               ? <div style={{ color: "var(--text-faint)", fontSize: "13px" }}>Loading…</div>
               : <div className="card" style={{ padding: "16px 20px" }}><StateTimeline transitions={transitions} /></div>
           )}

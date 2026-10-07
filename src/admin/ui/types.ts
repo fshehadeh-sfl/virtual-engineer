@@ -30,6 +30,7 @@ export interface ApiTask {
   createdAt: string;
   updatedAt: string;
   waitingForAgentSlot?: boolean;
+  permissions?: { operate: boolean; delete: boolean };
   changesPerRepo?: ChangePerRepo[];
 }
 

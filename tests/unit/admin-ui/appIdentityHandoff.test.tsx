@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiMe } from "../../../src/admin/ui/types.js";
 
@@ -49,6 +49,7 @@ vi.mock("../../../src/admin/ui/views/TasksView/index.js", () => ({
 vi.mock("../../../src/admin/ui/views/ConfigView/index.js", () => ({ ConfigView: () => null }));
 
 import { App, shouldEnableConfigWorkflow } from "../../../src/admin/ui/App.js";
+import { ApiError } from "../../../src/admin/ui/api.js";
 
 describe("App identity loading", () => {
   beforeEach(() => {
@@ -105,6 +106,42 @@ describe("App identity loading", () => {
       expect(state.getAttribute("data-user")).toBe("task-reader");
       expect(state.textContent).toBe("1");
     });
+  });
+
+  it("reports failed initial data loads and lets the user retry", async () => {
+    let unavailable = true;
+    const get = apiMocks.get.getMockImplementation()!;
+    apiMocks.get.mockImplementation((path: string) =>
+      unavailable && path === "/api/admin/tasks"
+        ? Promise.reject(new Error("offline"))
+        : get(path));
+    apiMocks.getMe.mockResolvedValue({
+      id: "task-reader", username: "task-reader", role: "viewer",
+      capabilities: { superuser: false, grants: { "task.read": "*" } },
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Could not load");
+    unavailable = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+    await waitFor(() => expect(screen.getByTestId("app-state").textContent).toBe("1"));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not offer retry for overview access denied to a task-only reader", async () => {
+    const get = apiMocks.get.getMockImplementation()!;
+    apiMocks.get.mockImplementation((path: string) =>
+      path === "/api/admin/overview"
+        ? Promise.reject(new ApiError(403, "Forbidden"))
+        : get(path));
+    apiMocks.getMe.mockResolvedValue({
+      id: "task-reader", username: "task-reader", role: "viewer",
+      capabilities: { superuser: false, grants: { "task.read": "*" } },
+    });
+    await act(async () => { render(<App />); });
+    expect(screen.getByTestId("app-state").textContent).toBe("1");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it.each(["operator", "viewer"] as const)("allows %s task navigation when a denied config route has no mounted guard", async (role) => {

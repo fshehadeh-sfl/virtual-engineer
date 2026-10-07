@@ -3,16 +3,16 @@ import { Icon } from "../../components/Icon.tsx";
 import { StatePill } from "../../components/StatePill.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { ProviderGlyph } from "../../components/ProviderGlyph.tsx";
-import { isActiveState } from "../../states.ts";
+import { classifyWorkflowBucket, isActiveState } from "../../states.ts";
 import { relativeTime } from "../../api.ts";
-import type { ApiTask, TaskState } from "../../types.ts";
+import type { ApiTask, TaskWorkflowBucket } from "../../types.ts";
 
-const FILTERS: { id: string; label: string; states?: TaskState[] }[] = [
+const FILTERS: { id: "all" | TaskWorkflowBucket; label: string }[] = [
   { id: "all",      label: "All" },
-  { id: "active",   label: "Active",   states: ["AGENT_RUNNING", "REVIEW_RUNNING", "CONTEXT_BUILDING", "FEEDBACK_PROCESSING", "RETRY_CYCLE", "REVIEW_COMMENTING"] },
-  { id: "watching", label: "Watching", states: ["REVIEW_WATCHING", "IN_REVIEW", "REVIEW_PENDING", "DETECTED"] },
-  { id: "done",     label: "Done",     states: ["DONE", "MERGED", "REVIEW_DONE"] },
-  { id: "failed",   label: "Failed",   states: ["FAILED", "REVIEW_FAILED", "ABANDONED"] },
+  { id: "active",   label: "Active" },
+  { id: "watching", label: "Watching" },
+  { id: "done",     label: "Done" },
+  { id: "failed",   label: "Failed" },
 ];
 
 interface TaskRowProps {
@@ -25,10 +25,9 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
   const running = isActiveState(task.state);
   const primaryLink = task.ticketUrl ?? task.reviewUrl;
   return (
-    <button
-      onClick={onClick}
+    <div
       style={{
-        width: "100%", textAlign: "left", border: "none", cursor: "pointer",
+        position: "relative", width: "100%", textAlign: "left", cursor: "pointer",
         borderLeft: `2px solid ${selected ? "var(--accent)" : "transparent"}`,
         background: selected ? "var(--panel-2)" : "transparent",
         padding: `${11 * (1)}px 14px`,
@@ -39,6 +38,12 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
       onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "color-mix(in oklab, var(--panel-2) 55%, transparent)"; }}
       onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
     >
+      <button
+        type="button"
+        aria-label={`Inspect task ${task.ticketTitle || task.ticketId}`}
+        onClick={onClick}
+        style={{ position: "absolute", inset: 0, zIndex: 1, width: "100%", border: 0, background: "transparent", cursor: "pointer" }}
+      />
       <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
         <ProviderGlyph provider={task.ticketSourceLabel} size={22} />
         {primaryLink ? (
@@ -48,7 +53,7 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
             rel="noreferrer"
             onClick={(e) => e.stopPropagation()}
             className="mono"
-            style={{ fontSize: "11px", color: "var(--accent-strong)", textDecoration: "none" }}
+            style={{ position: "relative", zIndex: 2, fontSize: "11px", color: "var(--accent-strong)", textDecoration: "none" }}
             title="Open task/review"
           >
             {task.ticketSourceLabel.toUpperCase()} #{task.displayId ?? task.ticketId}
@@ -78,7 +83,7 @@ function TaskRow({ task, selected, onClick }: TaskRowProps) {
           {relativeTime(task.updatedAt)}
         </span>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -86,15 +91,15 @@ interface TaskListProps {
   tasks: ApiTask[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  compact?: boolean | undefined;
 }
 
-export function TaskList({ tasks, selectedId, onSelect }: TaskListProps) {
-  const [filter, setFilter] = useState("all");
+export function TaskList({ tasks, selectedId, onSelect, compact = false }: TaskListProps) {
+  const [filter, setFilter] = useState<"all" | TaskWorkflowBucket>("all");
   const [query, setQuery] = useState("");
 
   const filtered = tasks.filter((t) => {
-    const f = FILTERS.find((x) => x.id === filter);
-    if (f?.states && !f.states.includes(t.state)) return false;
+    if (filter !== "all" && classifyWorkflowBucket(t.state) !== filter) return false;
     if (query) {
       const q = query.toLowerCase();
       return (
@@ -109,7 +114,7 @@ export function TaskList({ tasks, selectedId, onSelect }: TaskListProps) {
   return (
     <div
       style={{
-        width: "340px", flex: "none",
+        width: compact ? "100%" : "340px", flex: compact ? 1 : "none",
         borderRight: "1px solid var(--border-soft)", background: "var(--rail)",
         display: "flex", flexDirection: "column", minHeight: 0,
       }}
