@@ -87,7 +87,7 @@ function DrawerActions({ enabled, onClose, onToggle, onDelete, onEdit, onAccess,
             )}
             {onStatistics && (
               <button className="btn" onClick={onStatistics}>
-                <Icon name="pulse" size={13} /> Statistics
+                <Icon name="bar-chart" size={13} /> Statistics
               </button>
             )}
       {onDelete && (
@@ -353,7 +353,7 @@ export function ProjectDrawer({ item, detail, agents, onClose, onEdit, onToggle,
   const banner = item.enabled
     ? {
         tone: item.type === "review" ? ("warn" as const) : ("active" as const),
-        icon: "pulse",
+        icon: "play",
         title: "Active",
         sub: "Polling ticket source · processing tasks",
       }
