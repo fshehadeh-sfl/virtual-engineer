@@ -4,7 +4,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { RowCard } from "../../components/RowCard.tsx";
 import { ListToolbar, NoListMatches } from "../../components/ListToolbar.tsx";
 import { api } from "../../api.ts";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { makeHasPermission, useCurrentUser } from "../../authContext.tsx";
 import { ProjectFormModal } from "./ProjectFormModal.tsx";
 import { ProjectDrawer } from "./ConfigDrawers.tsx";
@@ -29,6 +29,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
   const { can, isAdmin, user } = useCurrentUser();
   const hasStatisticsPermission = makeHasPermission(user)("project.statistics.read");
   const [busy, setBusy] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [editingProject, setEditingProject] = useState<ApiProjectDetail | null>(null);
   const listConfig = useMemo(() => projectListConfig(projects, agents), [projects, agents]);
   const visibleProjects = useMemo(() => applyListFilter(projects, listFilter, listConfig), [projects, listFilter, listConfig]);
@@ -70,9 +71,12 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
+    setToggleError(null);
     try {
       await api.patch(`/api/admin/projects/${id}/${enabled ? "disable" : "enable"}`);
       onRefresh();
+    } catch (error: unknown) {
+      setToggleError(error instanceof Error ? error.message : "Failed to update project");
     } finally {
       setBusy(null);
     }
@@ -124,21 +128,24 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
       return <ProjectAccessEditor project={accessProject} onClose={() => setAccessProject(null)} />;
     }
     return (
-      <ProjectDrawer
-        item={detailItem}
-        detail={projectDetail?.id === detailItem.id ? projectDetail : null}
-        agents={agents}
-        onClose={() => navigate({ section: "projects", mode: "list" })}
-        {...(can("project.owner", detailItem.id, detailItem.ownerUserId ?? null)
-          ? { onAccess: () => setAccessProject(detailItem) }
-          : {})}
-        {...(canViewProjectStatistics(detailItem, user, isAdmin, hasStatisticsPermission)
-          ? { onStatistics: () => navigate({ section: "projects", mode: "statistics", id: detailItem.id }) }
-          : {})}
-        {...(can("project.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
-        {...(can("project.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
-        {...(can("project.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
-      />
+      <>
+        {toggleError && <div role="alert" style={{ color: "var(--danger)" }}>{toggleError}</div>}
+        <ProjectDrawer
+          item={detailItem}
+          detail={projectDetail?.id === detailItem.id ? projectDetail : null}
+          agents={agents}
+          onClose={() => navigate({ section: "projects", mode: "list" })}
+          {...(can("project.owner", detailItem.id, detailItem.ownerUserId ?? null)
+            ? { onAccess: () => setAccessProject(detailItem) }
+            : {})}
+          {...(canViewProjectStatistics(detailItem, user, isAdmin, hasStatisticsPermission)
+            ? { onStatistics: () => navigate({ section: "projects", mode: "statistics", id: detailItem.id }) }
+            : {})}
+          {...(can("project.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "projects", mode: "edit", id: detailItem.id }) } : {})}
+          {...(can("project.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+          {...(can("project.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteProject(detailItem).then((deleted) => { if (deleted) navigate({ section: "projects", mode: "list" }); }); } } : {})}
+        />
+      </>
     );
   }
 
@@ -164,6 +171,7 @@ export function ProjectsSection({ projects, agents, integrations, onRefresh, rou
 
   return (
     <>
+      {toggleError && <div role="alert" style={{ color: "var(--danger)", marginBottom: "12px" }}>{toggleError}</div>}
       <div style={{ marginBottom: "22px" }}>
         <div className="eyebrow" style={{ marginBottom: "8px" }}>Configuration / Projects</div>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px" }}>
@@ -276,34 +284,48 @@ interface ProjectAccessResponse {
 }
 
 function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClose: () => void }) {
-  const [data, setData] = useState<ProjectAccessResponse>({ grants: [], availableGroups: [] });
+  const [data, setData] = useState<ProjectAccessResponse | null>(null);
   const [groupId, setGroupId] = useState("");
   const [permissions, setPermissions] = useState<string[]>(DEFAULT_PROJECT_ACCESS_PERMISSIONS);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    void api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`)
-      .then((response) => {
-        if (cancelled) return;
-        setData(response);
-        setGroupId((current) => current || response.availableGroups[0]?.id || "");
-      });
-    return () => { cancelled = true; };
+  const load = useCallback(async (): Promise<void> => {
+    const id = ++requestId.current;
+    setError(null);
+    try {
+      const response = await api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`);
+      if (id !== requestId.current) return;
+      setData(response);
+      setGroupId((current) => current || response.availableGroups[0]?.id || "");
+    } catch (reason: unknown) {
+      if (id === requestId.current) {
+        setError(reason instanceof Error ? reason.message : "Failed to load project access");
+      }
+    }
   }, [project.id]);
 
   useEffect(() => {
-    const existing = data.grants.find((grant) => grant.groupId === groupId);
+    void load();
+    const requests = requestId;
+    return () => { ++requests.current; };
+  }, [load]);
+
+  useEffect(() => {
+    const existing = data?.grants.find((grant) => grant.groupId === groupId);
     setPermissions(existing ? [...existing.permissions] : [...DEFAULT_PROJECT_ACCESS_PERMISSIONS]);
-  }, [data.grants, groupId]);
+  }, [data, groupId]);
 
   const save = async (): Promise<void> => {
     if (!groupId || permissions.length === 0) return;
     setBusy(true);
+    setError(null);
     try {
       await api.put(`/api/admin/projects/${project.id}/access/groups/${groupId}`, { permissions });
-      const response = await api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`);
-      setData(response);
+      await load();
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Failed to save project access");
     } finally {
       setBusy(false);
     }
@@ -311,10 +333,12 @@ function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClos
 
   const remove = async (id: string): Promise<void> => {
     setBusy(true);
+    setError(null);
     try {
       await api.delete(`/api/admin/projects/${project.id}/access/groups/${id}`);
-      const response = await api.get<ProjectAccessResponse>(`/api/admin/projects/${project.id}/access`);
-      setData(response);
+      await load();
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Failed to remove project access");
     } finally {
       setBusy(false);
     }
@@ -328,7 +352,8 @@ function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClos
       footer={<button className="btn" onClick={onClose}>Done</button>}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-        {data.grants.map((grant) => (
+        {error && <div role="alert" style={{ color: "var(--danger)" }}>{error} <button className="btn" onClick={() => void load()}>Retry</button></div>}
+        {data?.grants.map((grant) => (
           <div key={grant.groupId} style={{ display: "flex", alignItems: "center", gap: "12px" }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600 }}>{grant.groupName}</div>
@@ -341,7 +366,7 @@ function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClos
         ))}
         <FieldSelect value={groupId} onChange={(event) => setGroupId(event.target.value)}>
           <option value="">Select a group</option>
-          {data.availableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+          {data?.availableGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
         </FieldSelect>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "8px" }}>
           {PROJECT_ACCESS_OPTIONS.map(([permission, label]) => (
@@ -357,7 +382,7 @@ function ProjectAccessEditor({ project, onClose }: { project: ApiProject; onClos
             </label>
           ))}
         </div>
-        <button className="btn primary" disabled={busy || !groupId || permissions.length === 0} onClick={() => void save()}>
+        <button className="btn primary" disabled={busy || !data || !groupId || permissions.length === 0} onClick={() => void save()}>
           Save access
         </button>
       </div>

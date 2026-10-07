@@ -14,9 +14,10 @@ interface OverviewViewProps {
   overview: ApiOverview | null;
   tasks: ApiTask[];
   providers: ApiProvider[];
-  activeIntegrationCount: number;
+  activeIntegrationCount: number | null;
+  canViewConfig?: boolean | undefined;
   pollingIntervalMs: number;
-  onNavigate: (v: "tasks" | "config") => void;
+  onNavigate: (v: "tasks" | "config", taskId?: string) => void;
 }
 
 function StateDistribution({ tasks }: { tasks: ApiTask[] }) {
@@ -246,7 +247,7 @@ function modelLabel(modelId: string | null): string {
 
 function CostSummaryCard() {
   const [days, setDays] = useState<number | null>(30);
-  const [summary, setSummary] = useState<ApiCostSummary | null>(null);
+  const [summary, setSummary] = useState<{ days: number | null; data: ApiCostSummary } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -258,7 +259,7 @@ function CostSummaryCard() {
     api
       .get<ApiCostSummary>(path)
       .then((data) => {
-        if (!cancelled) setSummary(data);
+        if (!cancelled) setSummary({ days, data });
       })
       .catch(() => {
         if (!cancelled) setError(true);
@@ -271,8 +272,9 @@ function CostSummaryCard() {
     };
   }, [days]);
 
-  const projects = summary
-    ? summary.perProject.filter((p) => p.usd > 0 || p.runCount > 0)
+  const currentSummary = summary?.days === days ? summary.data : null;
+  const projects = currentSummary
+    ? currentSummary.perProject.filter((p) => p.usd > 0 || p.runCount > 0)
     : [];
   const maxUsd = Math.max(...projects.map((p) => p.usd), 0.0001);
 
@@ -305,27 +307,27 @@ function CostSummaryCard() {
 
       {error ? (
         <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Failed to load cost summary.</div>
-      ) : loading && !summary ? (
+      ) : loading || !currentSummary ? (
         <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Loading…</div>
-      ) : summary ? (
+      ) : (
         <>
           <div style={{ display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "4px" }}>
             <span className="mono" style={{ fontSize: "28px", fontWeight: 600, letterSpacing: "-0.02em" }}>
-              {formatUsd(summary.totalUsd)}
+              {formatUsd(currentSummary.totalUsd)}
             </span>
             <span style={{ fontSize: "12px", color: "var(--text-faint)" }}>instance total</span>
           </div>
           <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "4px" }}>
-            {summary.totalRuns} run{summary.totalRuns === 1 ? "" : "s"}
-            {summary.totalAiCredits > 0 ? ` · ${summary.totalAiCredits.toFixed(2)} credits` : ""}
+            {currentSummary.totalRuns} run{currentSummary.totalRuns === 1 ? "" : "s"}
+            {currentSummary.totalAiCredits > 0 ? ` · ${currentSummary.totalAiCredits.toFixed(2)} credits` : ""}
           </div>
           <div style={{ fontSize: "11.5px", color: "var(--text-faint)", marginBottom: "16px" }}>
-            {summary.totalRunsWithTokens > 0 ? (
+            {currentSummary.totalRunsWithTokens > 0 ? (
               <>
-                {formatTokens(summary.totalTokens.input)} in · {formatTokens(summary.totalTokens.output)} out
-                {cacheHitPct(summary.totalTokens) !== null ? ` · ${cacheHitPct(summary.totalTokens)}% cached` : ""}
-                {summary.totalRunsWithTokens < summary.totalRuns
-                  ? ` · ${summary.totalRuns - summary.totalRunsWithTokens} run(s) report no usage`
+                {formatTokens(currentSummary.totalTokens.input)} in · {formatTokens(currentSummary.totalTokens.output)} out
+                {cacheHitPct(currentSummary.totalTokens) !== null ? ` · ${cacheHitPct(currentSummary.totalTokens)}% cached` : ""}
+                {currentSummary.totalRunsWithTokens < currentSummary.totalRuns
+                  ? ` · ${currentSummary.totalRuns - currentSummary.totalRunsWithTokens} run(s) report no usage`
                   : ""}
               </>
             ) : (
@@ -357,14 +359,14 @@ function CostSummaryCard() {
             </div>
           )}
         </>
-      ) : null}
+      )}
     </div>
   );
 }
 
 function ModelUsageCard() {
   const [days, setDays] = useState<number | null>(30);
-  const [summary, setSummary] = useState<ApiModelUsageSummary | null>(null);
+  const [summary, setSummary] = useState<{ days: number | null; data: ApiModelUsageSummary } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -376,7 +378,7 @@ function ModelUsageCard() {
     api
       .get<ApiModelUsageSummary>(path)
       .then((data) => {
-        if (!cancelled) setSummary(data);
+        if (!cancelled) setSummary({ days, data });
       })
       .catch(() => {
         if (!cancelled) setError(true);
@@ -389,12 +391,13 @@ function ModelUsageCard() {
     };
   }, [days]);
 
-  const models = summary
-    ? summary.byModel.filter((model) => model.workflowBucket !== "failed")
+  const currentSummary = summary?.days === days ? summary.data : null;
+  const models = currentSummary
+    ? currentSummary.byModel.filter((model) => model.workflowBucket !== "failed")
     : [];
   const totalRuns = models.reduce((sum, model) => sum + model.runCount, 0);
-  const projects = summary
-    ? summary.perProject
+  const projects = currentSummary
+    ? currentSummary.perProject
       .filter((project) => project.workflowBucket !== "failed")
       .filter((project) => project.models.some((model) => model.runCount > 0 && model.workflowBucket !== "failed"))
     : [];
@@ -428,9 +431,9 @@ function ModelUsageCard() {
 
       {error ? (
         <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Failed to load model usage.</div>
-      ) : loading && !summary ? (
+      ) : loading || !currentSummary ? (
         <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>Loading…</div>
-      ) : !summary || models.length === 0 ? (
+      ) : models.length === 0 ? (
         <div style={{ fontSize: "12.5px", color: "var(--text-faint)" }}>No model usage in this period.</div>
       ) : (
         <>
@@ -517,7 +520,7 @@ function ModelUsageCard() {
   );
 }
 
-function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks") => void }) {
+function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks", taskId?: string) => void }) {
   const recent = tasks
     .filter((t) => isActiveState(t.state))
     .slice(0, 6);
@@ -537,7 +540,7 @@ function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks"
         recent.map((t) => (
           <button
             key={t.taskId}
-            onClick={() => onOpen("tasks")}
+            onClick={() => onOpen("tasks", t.taskId)}
             style={{
               display: "flex", alignItems: "center", gap: "12px", padding: "13px 18px",
               borderBottom: "1px solid var(--border-soft)",
@@ -564,16 +567,18 @@ function ActivityFeed({ tasks, onOpen }: { tasks: ApiTask[]; onOpen: (v: "tasks"
   );
 }
 
-function ProviderHealth({ providers, onOpen }: { providers: ApiProvider[]; onOpen: (v: "config") => void }) {
+function ProviderHealth({ providers, onOpen, canViewConfig }: { providers: ApiProvider[]; onOpen: (v: "config") => void; canViewConfig: boolean }) {
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", overflow: "hidden", flex: 1, minWidth: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: "9px", padding: "15px 18px", borderBottom: "1px solid var(--border-soft)" }}>
         <Icon name="server" size={15} style={{ color: "var(--text-faint)" }} />
         <span style={{ fontSize: "13px", fontWeight: 600 }}>Provider health</span>
         <div style={{ flex: 1 }} />
-        <button className="btn sm" onClick={() => onOpen("config")}>
-          Manage <Icon name="arrow" size={13} />
-        </button>
+        {canViewConfig && (
+          <button className="btn sm" onClick={() => onOpen("config")}>
+            Manage <Icon name="arrow" size={13} />
+          </button>
+        )}
       </div>
       {providers.slice(0, 8).map((p) => {
         const tone = p.status === "ready" ? "ok" : p.status === "disabled" ? "muted" : "danger";
@@ -599,11 +604,9 @@ function ProviderHealth({ providers, onOpen }: { providers: ApiProvider[]; onOpe
   );
 }
 
-export function OverviewView({ overview, tasks, providers, activeIntegrationCount, pollingIntervalMs, onNavigate }: OverviewViewProps) {
+export function OverviewView({ overview, tasks, providers, activeIntegrationCount, canViewConfig = true, pollingIntervalMs, onNavigate }: OverviewViewProps) {
   const active   = tasks.filter((t) => isActiveState(t.state)).length;
   const watching = tasks.filter((t) => ["REVIEW_WATCHING", "IN_REVIEW", "REVIEW_PENDING"].includes(t.state)).length;
-  const failed   = tasks.filter((t) => ["FAILED", "REVIEW_FAILED"].includes(t.state)).length;
-  const done     = tasks.filter((t) => ["DONE", "MERGED", "REVIEW_DONE"].includes(t.state)).length;
 
   return (
     <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
@@ -620,8 +623,8 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
             <div className="eyebrow" style={{ marginBottom: "6px" }}>Orchestrator</div>
             <h1 style={{ margin: 0, fontSize: "26px", fontWeight: 600, letterSpacing: "-0.02em" }}>General View</h1>
             <p style={{ margin: "6px 0 0", color: "var(--text-faint)", fontSize: "13.5px" }}>
-              Autonomous code generation &amp; review across{" "}
-              {activeIntegrationCount} active integrations.
+              Autonomous code generation &amp; review
+              {activeIntegrationCount !== null && <> across {activeIntegrationCount} active integrations</>}.
             </p>
           </div>
           {overview && (
@@ -640,8 +643,8 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
           <Stat label="Active now"    value={active}   sub="agent cycles in flight" tone="active" icon="bolt" big />
           <Stat label="Watching"      value={watching} sub="awaiting next patchset"  tone="warn"   icon="eye"  big />
-          <Stat label="Completed · 7d" value={overview ? overview.stats.completedLast7d : done} sub="merged or reviewed" tone="ok" icon="check" big />
-          <Stat label="Failed · 7d"   value={overview ? overview.stats.failedLast7d : failed} sub="needs attention" tone="danger" icon="alert" big />
+          <Stat label="Completed · 7d" value={overview?.stats.completedLast7d ?? "—"} sub="merged or reviewed" tone="ok" icon="check" big />
+          <Stat label="Failed · 7d"   value={overview?.stats.failedLast7d ?? "—"} sub="needs attention" tone="danger" icon="alert" big />
         </div>
 
         {/* mid row */}
@@ -665,7 +668,7 @@ export function OverviewView({ overview, tasks, providers, activeIntegrationCoun
         {/* bottom row */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap", alignItems: "flex-start" }}>
           <ActivityFeed tasks={tasks} onOpen={onNavigate} />
-          <ProviderHealth providers={providers} onOpen={onNavigate} />
+          <ProviderHealth providers={providers} onOpen={onNavigate} canViewConfig={canViewConfig} />
         </div>
       </div>
     </div>

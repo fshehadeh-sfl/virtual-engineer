@@ -10,6 +10,8 @@ interface TasksViewProps {
 }
 
 export function TasksView({ tasks, onRefresh }: TasksViewProps) {
+  const [compact, setCompact] = useState(() => window.matchMedia?.("(max-width: 700px)").matches ?? false);
+  const [showCompactDetail, setShowCompactDetail] = useState(() => window.location.hash.startsWith("#tasks/"));
   const [selectedId, setSelectedId] = useState<string>(() => {
     const part = window.location.hash.split("/")[1] ?? "";
     return tasks.find((t) => t.taskId === part)?.taskId ?? tasks[0]?.taskId ?? "";
@@ -21,6 +23,17 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
 
   useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 700px)");
+    if (!media) return;
+    const onChange = () => {
+      setCompact(media.matches);
+      if (media.matches) setShowCompactDetail(window.location.hash.startsWith("#tasks/"));
+    };
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
     if (tasks.length === 0) return;
     if (selectedId && tasks.some((t) => t.taskId === selectedId)) return;
     const part = window.location.hash.split("/")[1] ?? "";
@@ -28,9 +41,10 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
     const id = fromHash ?? tasks[0]?.taskId ?? "";
     if (id) {
       setSelectedId(id);
-      if (!fromHash) window.location.hash = `tasks/${id}`;
+      if (fromHash) setShowCompactDetail(true);
+      else if (!compact) window.location.hash = `tasks/${id}`;
     }
-  }, [tasks, selectedId]);
+  }, [compact, tasks, selectedId]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -38,6 +52,7 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
       const part = window.location.hash.split("/")[1] ?? "";
       const id = tasksRef.current.find((t) => t.taskId === part)?.taskId ?? "";
       if (id) setSelectedId(id);
+      setShowCompactDetail(Boolean(id));
     };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
@@ -45,6 +60,7 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
 
   function handleSelect(id: string) {
     setSelectedId(id);
+    setShowCompactDetail(true);
     window.location.hash = `tasks/${id}`;
   }
 
@@ -57,15 +73,25 @@ export function TasksView({ tasks, onRefresh }: TasksViewProps) {
   const task = selectedId ? tasks.find((t) => t.taskId === selectedId) ?? null : null;
 
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      <TaskList tasks={tasks} selectedId={selectedId} onSelect={handleSelect} />
-      {task ? (
-        <TaskDetail task={task} onRefresh={onRefresh} onDeleted={handleDeleted} />
-      ) : (
+    <div style={{ flex: 1, display: "flex", flexDirection: compact ? "column" : "row", minHeight: 0, minWidth: 0 }}>
+      {(!compact || !showCompactDetail || !task) && (
+        <TaskList tasks={tasks} selectedId={selectedId} onSelect={handleSelect} compact={compact} />
+      )}
+      {task && (!compact || showCompactDetail) ? (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
+          {compact && (
+            <button className="btn ghost" style={{ alignSelf: "flex-start", margin: "8px 14px" }} onClick={() => {
+              setShowCompactDetail(false);
+              window.location.hash = "tasks";
+            }}>Back to tasks</button>
+          )}
+          <TaskDetail task={task} onRefresh={onRefresh} onDeleted={handleDeleted} />
+        </div>
+      ) : !compact ? (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-ghost)", fontSize: "13px" }}>
           Select a task to inspect its cycles and timeline.
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -323,7 +323,7 @@ export function ConfigView(props: ConfigViewData) {
       {effectiveSec === "agents"       && <AgentsSection {...routedProps} />}
       {effectiveSec === "projects"     && <ProjectsSection {...routedProps} />}
       {effectiveSec === "prompts"      && <PromptsSection {...routedProps} />}
-      {effectiveSec === "runtime-policies" && <RuntimePoliciesSection />}
+      {effectiveSec === "runtime-policies" && <RuntimePoliciesSection onDirtyChange={setDirty} />}
       {effectiveSec === "denials"      && <DenialsSection />}
       {effectiveSec === "users"        && <UsersSection {...routedProps} />}
       {effectiveSec === "groups"       && <GroupsSection {...routedProps} />}

@@ -172,30 +172,33 @@ function ModelList({ models }: { models: ApiModelUsageEntry[] }) {
 export function ProjectStatisticsView({ project, onBack }: { project: ApiProject; onBack: () => void }) {
   const [days, setDays] = useState<number | null>(30);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [statistics, setStatistics] = useState<ApiProjectStatistics | null>(null);
+  const requestKey = `${project.id}:${days ?? "all"}:${refreshKey}`;
+  const [result, setResult] = useState<{ key: string; data: ApiProjectStatistics } | null>(null);
+  const statistics = result?.key === requestKey ? result.data : null;
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
+  const error = failure?.key === requestKey ? failure.message : null;
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
+    setFailure(null);
     const path = days === null
       ? `/api/admin/projects/${project.id}/statistics`
       : `/api/admin/projects/${project.id}/statistics?days=${days}`;
     void api.get<ApiProjectStatistics>(path)
       .then((data) => {
-        if (!cancelled) setStatistics(data);
+        if (!cancelled) setResult({ key: requestKey, data });
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setError(reason instanceof Error ? reason.message : "Unable to load project statistics");
+        setFailure({ key: requestKey, message: reason instanceof Error ? reason.message : "Unable to load project statistics" });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [days, project.id, refreshKey]);
+  }, [days, project.id, refreshKey, requestKey]);
 
   const emptyPeriod = statistics !== null &&
     statistics.period.tasksCreated === 0 &&
@@ -225,7 +228,7 @@ export function ProjectStatisticsView({ project, onBack }: { project: ApiProject
         </>
       }
     >
-      <div className="project-statistics" aria-busy={loading}>
+      <div className="project-statistics" aria-busy={loading || (statistics === null && error === null)}>
         <div className="project-statistics-toolbar">
           <div>
             <div className="eyebrow">Activity window</div>
@@ -245,7 +248,7 @@ export function ProjectStatisticsView({ project, onBack }: { project: ApiProject
           </div>
         </div>
 
-        {loading && statistics === null && <div className="placeholder" role="status">Loading project statistics…</div>}
+        {statistics === null && error === null && <div className="placeholder" role="status">Loading project statistics…</div>}
         {error && statistics === null && (
           <div className="project-stat-error" role="alert">
             <StatusBanner tone="danger" icon="alert" title="Failed to load project statistics." sub={error} />

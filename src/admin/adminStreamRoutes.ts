@@ -3,7 +3,7 @@ import type { AgentCycle, AgentLogEvent, ProjectId, ProjectRecord, Task, TaskId 
 import { agentLogBus, getTaskEventBuffer } from "../agents/agentEventBus.js";
 import { normalizeAgentEvent } from "../agents/agentEventTypes.js";
 import { writeJson, toIsoTimestamp } from "./adminRouteUtils.js";
-import { deduplicateByTicket, filterTasksByReadAccess, filterTasksByReadScope } from "./adminTaskRoutes.js";
+import { createTaskPermissionResolver, deduplicateByTicket, filterTasksByReadAccess, filterTasksByReadScope } from "./adminTaskRoutes.js";
 import { getEffectivePermissions } from "./authContext.js";
 import { requestCanAccessResource } from "./authContext.js";
 import { can } from "./authorization/policyEngine.js";
@@ -203,10 +203,14 @@ export function registerStreamRoutes(router: Router, deps: StreamRouteDeps): voi
           : filterTasksByReadScope(req, candidates);
         const sorted = visible
           .sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime());
-        res.write(`event: tasks\ndata: ${JSON.stringify(sorted.map((task) => ({
+        const resolvePermissions = createTaskPermissionResolver(req, deps.projectStore);
+        const serialized = await Promise.all(sorted.map(async (task) => ({
           ...task,
           waitingForAgentSlot: deps.isTaskWaiting?.(task.taskId) ?? false,
-        })))}\n\n`);
+          permissions: await resolvePermissions(task),
+        })));
+        if (closed || !res.writable) return;
+        res.write(`event: tasks\ndata: ${JSON.stringify(serialized)}\n\n`);
       } catch { /* ignore */ }
     };
 

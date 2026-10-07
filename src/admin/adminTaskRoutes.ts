@@ -53,12 +53,44 @@ export async function filterTasksByReadAccess(
       {
         type: "task",
         id: task.taskId,
-        projectId: task.projectId,
+        projectId: task.projectId ?? null,
         ownerUserId: project.ownerUserId ?? null,
       },
       actorUserId
     );
   });
+}
+
+/** Resolve the same resource-scoped rights used by task action routes. */
+export function createTaskPermissionResolver(
+  req: IncomingMessage,
+  projectStore?: { getProjectById(id: ProjectId): Promise<ProjectRecord | null> }
+): (task: Task) => Promise<{ operate: boolean; delete: boolean } | undefined> {
+  const perms = getEffectivePermissions(req);
+  const actorUserId = getAuthContext(req)?.userId ?? null;
+  const projects = new Map<ProjectId, Promise<ProjectRecord | null>>();
+  return async (task) => {
+    if (!perms) return undefined;
+    let project: ProjectRecord | null = null;
+    if (task.projectId != null && projectStore) {
+      let pending = projects.get(task.projectId);
+      if (!pending) {
+        pending = projectStore.getProjectById(task.projectId);
+        projects.set(task.projectId, pending);
+      }
+      project = await pending;
+    }
+    const permitted = (permission: "task.operate" | "task.delete"): boolean =>
+      project
+        ? canAccessResource(perms, permission, {
+          type: "task",
+          id: task.taskId,
+          projectId: task.projectId ?? null,
+          ownerUserId: project.ownerUserId ?? null,
+        }, actorUserId)
+        : can(perms, permission, task.projectId);
+    return { operate: permitted("task.operate"), delete: permitted("task.delete") };
+  };
 }
 
 /** Subset of state-store methods required by the task routes. */
@@ -106,22 +138,25 @@ export function registerTaskRoutes(router: Router, deps: TaskRouteDeps): void {
         cprReviewUrlByTaskId.set(c.taskId, c.reviewUrl);
       }
     }
+    const resolvePermissions = createTaskPermissionResolver(req, deps.projectStore);
     writeJson(res, 200, {
-      tasks: deduplicated.map((t) => {
+      tasks: await Promise.all(deduplicated.map(async (t) => {
         const s = serializeTask(t);
         s["waitingForAgentSlot"] = deps.isTaskWaiting?.(t.taskId) ?? false;
         if (!s["reviewUrl"]) s["reviewUrl"] = cprReviewUrlByTaskId.get(t.taskId) ?? null;
+        s["permissions"] = await resolvePermissions(t);
         return s;
-      }),
+      })),
     });
   }, { permission: "task.read", collection: true });
 
-  router.add("GET", "/api/admin/tasks/:id", async (_req, res, params) => {
+  router.add("GET", "/api/admin/tasks/:id", async (req, res, params) => {
     const taskId = makeTaskId(params["id"] ?? "");
     const task = await deps.stateStore.getTask(taskId);
     if (!task) { writeJson(res, 404, { error: "Task not found" }); return; }
     const changesPerRepo = await deps.stateStore.getChangesForTask(taskId);
     const serialized = serializeTask(task);
+    serialized["permissions"] = await createTaskPermissionResolver(req, deps.projectStore)(task);
     serialized["waitingForAgentSlot"] = deps.isTaskWaiting?.(taskId) ?? false;
     serialized["changesPerRepo"] = changesPerRepo.map((c) => ({
       repoKey: c.repoKey,

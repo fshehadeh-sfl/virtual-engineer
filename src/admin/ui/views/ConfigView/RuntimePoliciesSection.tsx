@@ -60,7 +60,7 @@ export const RUNTIME_POLICY_TEMPLATES: Record<RuntimePolicy["kind"], string> = {
   inference: "inference:\n  endpoint: inference.local\n",
 };
 
-export function RuntimePoliciesSection() {
+export function RuntimePoliciesSection({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const [policies, setPolicies] = useState<RuntimePolicy[]>([]);
   const [projects, setProjects] = useState<ApiProject[]>([]);
   const [agents, setAgents] = useState<ApiAgent[]>([]);
@@ -214,8 +214,9 @@ export function RuntimePoliciesSection() {
       {(creating || editing) && (
         <PolicyEditor
           policy={editing}
-          onClose={() => { setCreating(false); setEditing(null); }}
-          onSaved={() => { setCreating(false); setEditing(null); void load(); }}
+          onDirtyChange={onDirtyChange}
+          onClose={() => { onDirtyChange?.(false); setCreating(false); setEditing(null); }}
+          onSaved={() => { onDirtyChange?.(false); setCreating(false); setEditing(null); void load(); }}
         />
       )}
 
@@ -355,13 +356,26 @@ function AssignModal({
   );
 }
 
-function PolicyEditor({ policy, onClose, onSaved }: { policy: RuntimePolicy | null; onClose: () => void; onSaved: () => void }) {
+function PolicyEditor({ policy, onClose, onSaved, onDirtyChange }: {
+  policy: RuntimePolicy | null;
+  onClose: () => void;
+  onSaved: () => void;
+  onDirtyChange?: ((dirty: boolean) => void) | undefined;
+}) {
   const [name, setName] = useState(policy?.name ?? "");
   const [kind, setKind] = useState<RuntimePolicy["kind"]>(policy?.kind ?? "network");
   const [description, setDescription] = useState(policy?.description ?? "");
   const [yaml, setYaml] = useState(policy?.yaml ?? RUNTIME_POLICY_TEMPLATES.network);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const dirty = name !== (policy?.name ?? "") || kind !== (policy?.kind ?? "network") ||
+    description !== (policy?.description ?? "") || yaml !== (policy?.yaml ?? RUNTIME_POLICY_TEMPLATES.network);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   async function handleSave() {
     setError(null);

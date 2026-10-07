@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { Tag } from "../../components/Tag.tsx";
 import { api } from "../../api.ts";
@@ -154,8 +154,10 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const requestId = useRef(0);
 
   const load = useCallback(async (nextOffset: number, action: string, actor: string, from: string, to: string) => {
+    const id = ++requestId.current;
     setLoading(true);
     setError(null);
     try {
@@ -165,19 +167,22 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
       if (from) params.set("from", from);
       if (to) params.set("to", to);
       const page = await api.get<ApiAuditPage>(`/api/admin/audit?${params.toString()}`);
+      if (id !== requestId.current) return;
       setEntries(page.entries);
       setActions(page.actions);
       setTotal(page.total);
       setOffset(page.offset);
     } catch (e) {
+      if (id !== requestId.current) return;
       setError(e instanceof Error ? e.message : "Failed to load audit log");
     } finally {
-      setLoading(false);
+      if (id === requestId.current) setLoading(false);
     }
   }, []);
 
   // Reload on filter change (debounced) — filters reset pagination.
   useEffect(() => {
+    ++requestId.current;
     const id = setTimeout(() => { void load(0, actionFilter, actorFilter, startDate, endDate); }, 300);
     return () => clearTimeout(id);
   }, [actionFilter, actorFilter, endDate, load, startDate]);
@@ -208,7 +213,7 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
       </div>
 
       {/* filters */}
-      <div data-tour="audit-filters" style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
+      <div data-tour="audit-filters" data-testid="audit-filters" style={{ display: "flex", flexWrap: "wrap", gap: "10px", alignItems: "center", marginBottom: "14px" }}>
         <select
           value={actionFilter}
           onChange={(e) => setActionFilter(e.target.value)}
@@ -265,10 +270,10 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
       )}
 
       {/* table */}
-      <div className="card" data-tour="audit-table" style={{ padding: 0, overflow: "hidden" }}>
+      <div className="card" data-tour="audit-table" data-testid="audit-table" style={{ padding: 0, overflowX: "auto" }}>
         <div
           style={{
-            display: "grid", gridTemplateColumns: "170px 140px 1fr 220px 32px",
+            display: "grid", minWidth: "760px", gridTemplateColumns: "170px 140px minmax(150px, 1fr) 220px 32px",
             gap: "0 12px", padding: "9px 16px",
             borderBottom: "1px solid var(--border-soft)",
             fontSize: "10.5px", fontWeight: 600, letterSpacing: "0.05em",
@@ -287,10 +292,10 @@ export function AuditSection({ onExport }: AuditSectionProps = {}) {
           const hasDetails = Object.keys(e.details ?? {}).length > 0 || e.targetId !== null;
           const targetLabel = targetName(e.details);
           return (
-            <div key={e.id} style={{ borderBottom: "1px solid var(--border-soft)" }}>
+            <div key={e.id} style={{ minWidth: "760px", borderBottom: "1px solid var(--border-soft)" }}>
               <div
                 style={{
-                  display: "grid", gridTemplateColumns: "170px 140px 1fr 220px 32px",
+                  display: "grid", gridTemplateColumns: "170px 140px minmax(150px, 1fr) 220px 32px",
                   gap: "0 12px", padding: "10px 16px", alignItems: "center",
                   fontSize: "12.5px",
                 }}
