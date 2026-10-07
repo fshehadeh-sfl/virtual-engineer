@@ -17,11 +17,13 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
   const { can } = useCurrentUser();
   const canCreate = can("agent.create");
   const [busy, setBusy] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<ApiAgent | null>(null);
   const listConfig = useMemo(() => agentListConfig(agents, integrations, plugins), [agents, integrations, plugins]);
   const visibleAgents = useMemo(() => applyListFilter(agents, listFilter, listConfig), [agents, listFilter, listConfig]);
   const detailId = route.section === "agents" && route.mode === "detail" ? route.id : null;
   const editingId = route.section === "agents" && route.mode === "edit" ? route.id : null;
+  const currentEditingAgent = editingAgent?.id === editingId ? editingAgent : null;
   const detailItem = detailId ? agents.find((agent) => agent.id === detailId) : undefined;
 
   useEffect(() => {
@@ -44,9 +46,12 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
+    setToggleError(null);
     try {
       await api.patch(`/api/admin/agents/${id}/${enabled ? "disable" : "enable"}`);
       onRefresh();
+    } catch (error: unknown) {
+      setToggleError(error instanceof Error ? error.message : "Failed to update agent");
     } finally {
       setBusy(null);
     }
@@ -83,15 +88,18 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
   if (route.mode === "detail") {
     if (!detailItem) return <AgentMissing onBack={() => navigate({ section: "agents", mode: "list" })} />;
     return (
-      <AgentDrawer
-        item={detailItem}
-        prompts={prompts}
-        integrations={integrations}
-        onClose={() => navigate({ section: "agents", mode: "list" })}
-        {...(can("agent.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "agents", mode: "edit", id: detailItem.id }) } : {})}
-        {...(can("agent.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
-        {...(can("agent.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteAgent(detailItem).then((deleted) => { if (deleted) navigate({ section: "agents", mode: "list" }); }); } } : {})}
-      />
+      <>
+        {toggleError && <div role="alert" style={{ color: "var(--danger)" }}>{toggleError}</div>}
+        <AgentDrawer
+          item={detailItem}
+          prompts={prompts}
+          integrations={integrations}
+          onClose={() => navigate({ section: "agents", mode: "list" })}
+          {...(can("agent.write", detailItem.id, detailItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "agents", mode: "edit", id: detailItem.id }) } : {})}
+          {...(can("agent.operate", detailItem.id, detailItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(detailItem.id, detailItem.enabled); } } : {})}
+          {...(can("agent.delete", detailItem.id, detailItem.ownerUserId ?? null) ? { onDelete: () => { void deleteAgent(detailItem).then((deleted) => { if (deleted) navigate({ section: "agents", mode: "list" }); }); } } : {})}
+        />
+      </>
     );
   }
 
@@ -99,15 +107,16 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
     if (route.mode === "create" && !canCreate) {
       return <AgentMissing onBack={() => navigate({ section: "agents", mode: "list" })} />;
     }
-    if (route.mode === "edit" && !editingAgent) {
+    if (route.mode === "edit" && !currentEditingAgent) {
       return <div className="placeholder config-page-loading">{busy ? "Loading agent…" : "Agent unavailable."}</div>;
     }
-    if (route.mode === "edit" && editingAgent && !can("agent.write", editingAgent.id, editingAgent.ownerUserId ?? null)) {
+    if (route.mode === "edit" && currentEditingAgent && !can("agent.write", currentEditingAgent.id, currentEditingAgent.ownerUserId ?? null)) {
       return <AgentMissing onBack={() => navigate({ section: "agents", mode: "list" })} />;
     }
     return (
       <AgentFormModal
-        agent={route.mode === "edit" ? editingAgent ?? undefined : undefined}
+        key={route.mode === "edit" ? editingId ?? undefined : "create"}
+        agent={route.mode === "edit" ? currentEditingAgent ?? undefined : undefined}
         integrations={integrations}
         plugins={plugins}
         prompts={prompts}
@@ -121,6 +130,7 @@ export function AgentsSection({ agents, integrations, plugins, prompts, onRefres
 
   return (
     <>
+      {toggleError && <div role="alert" style={{ color: "var(--danger)", marginBottom: "12px" }}>{toggleError}</div>}
       <div style={{ marginBottom: "22px" }}>
         <div className="eyebrow" style={{ marginBottom: "8px" }}>Configuration / Agents</div>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px" }}>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Field, FieldInput } from "../../components/Modal.tsx";
 import { api } from "../../api.ts";
 import { useCurrentUser } from "../../authContext.tsx";
@@ -57,11 +57,26 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [enginesDirty, setEnginesDirty] = useState(false);
+  const sourceKey = [
+    initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMs,
+    initialTicketCloseMaxRetries, initialTicketCloseRetrySeconds,
+  ].join(":");
+  const syncedSource = useRef(sourceKey);
+
+  const dirty =
+    Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
+    Number(maxCycles) !== baseline.maxAgentCycles ||
+    Number(maxRetries) !== baseline.maxRetryAttempts ||
+    Number(agentTimeoutMinutes) * 60_000 !== baseline.agentTimeoutMs ||
+    Number(ticketCloseMaxRetries) !== baseline.ticketCloseMaxRetries ||
+    Number(ticketCloseRetrySeconds) * 1000 !== baseline.ticketCloseRetryMinTimeoutMs;
 
   // Re-sync the form when the server-resolved values change (e.g. after a save,
   // an onRefresh(), or another admin updating settings) so inputs never show
   // stale values and `dirty` doesn't spuriously flip to true.
   useEffect(() => {
+    if (sourceKey === syncedSource.current || dirty || saving) return;
+    syncedSource.current = sourceKey;
     setPollingSeconds(String(initialPollingSeconds));
     setMaxCycles(String(initialCycles));
     setMaxRetries(String(initialRetries));
@@ -76,15 +91,7 @@ export function SystemSection({ config, status, onRefresh, onDirtyChange }: Syst
       ticketCloseMaxRetries: initialTicketCloseMaxRetries,
       ticketCloseRetryMinTimeoutMs: initialTicketCloseRetrySeconds * 1000,
     });
-  }, [initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMs, initialTimeoutMinutes, initialTicketCloseMaxRetries, initialTicketCloseRetrySeconds]);
-
-  const dirty =
-    Number(pollingSeconds) * 1000 !== baseline.pollingIntervalMs ||
-    Number(maxCycles) !== baseline.maxAgentCycles ||
-    Number(maxRetries) !== baseline.maxRetryAttempts ||
-    Number(agentTimeoutMinutes) * 60_000 !== baseline.agentTimeoutMs ||
-    Number(ticketCloseMaxRetries) !== baseline.ticketCloseMaxRetries ||
-    Number(ticketCloseRetrySeconds) * 1000 !== baseline.ticketCloseRetryMinTimeoutMs;
+  }, [sourceKey, dirty, saving, initialPollingSeconds, initialCycles, initialRetries, initialTimeoutMs, initialTimeoutMinutes, initialTicketCloseMaxRetries, initialTicketCloseRetrySeconds]);
 
   useEffect(() => {
     onDirtyChange(dirty || enginesDirty);

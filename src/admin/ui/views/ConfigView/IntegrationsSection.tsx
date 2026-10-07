@@ -18,6 +18,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
   const { can } = useCurrentUser();
   const canCreate = can("integration.create");
   const [busy, setBusy] = useState<string | null>(null);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const listConfig = useMemo(() => integrationListConfig(integrations, plugins), [integrations, plugins]);
   const visibleIntegrations = useMemo(() => applyListFilter(integrations, listFilter, listConfig), [integrations, listFilter, listConfig]);
   const routeId = route.section === "integrations" && (route.mode === "detail" || route.mode === "edit")
@@ -27,9 +28,12 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
 
   async function toggleEnabled(id: string, enabled: boolean) {
     setBusy(id);
+    setToggleError(null);
     try {
       await api.patch(`/api/admin/integrations/${id}/${enabled ? "disable" : "enable"}`);
       onRefresh();
+    } catch (error: unknown) {
+      setToggleError(error instanceof Error ? error.message : "Failed to update integration");
     } finally {
       setBusy(null);
     }
@@ -61,13 +65,16 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
   if (route.mode === "detail") {
     if (!routeItem) return <MissingEntity label="integration" onBack={() => navigate({ section: "integrations", mode: "list" })} />;
     return (
-      <IntegrationDrawer
-        item={routeItem}
-        onClose={() => navigate({ section: "integrations", mode: "list" })}
-        {...(can("integration.write", routeItem.id, routeItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "integrations", mode: "edit", id: routeItem.id }) } : {})}
-        {...(can("integration.operate", routeItem.id, routeItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(routeItem.id, routeItem.enabled); } } : {})}
-        {...(can("integration.delete", routeItem.id, routeItem.ownerUserId ?? null) ? { onDelete: () => { void deleteIntegration(routeItem).then((deleted) => { if (deleted) navigate({ section: "integrations", mode: "list" }); }); } } : {})}
-      />
+      <>
+        {toggleError && <div role="alert" style={{ color: "var(--danger)" }}>{toggleError}</div>}
+        <IntegrationDrawer
+          item={routeItem}
+          onClose={() => navigate({ section: "integrations", mode: "list" })}
+          {...(can("integration.write", routeItem.id, routeItem.ownerUserId ?? null) ? { onEdit: () => navigate({ section: "integrations", mode: "edit", id: routeItem.id }) } : {})}
+          {...(can("integration.operate", routeItem.id, routeItem.ownerUserId ?? null) ? { onToggle: () => { void toggleEnabled(routeItem.id, routeItem.enabled); } } : {})}
+          {...(can("integration.delete", routeItem.id, routeItem.ownerUserId ?? null) ? { onDelete: () => { void deleteIntegration(routeItem).then((deleted) => { if (deleted) navigate({ section: "integrations", mode: "list" }); }); } } : {})}
+        />
+      </>
     );
   }
 
@@ -92,6 +99,7 @@ export function IntegrationsSection({ integrations, plugins, onRefresh, route, n
 
   return (
     <>
+      {toggleError && <div role="alert" style={{ color: "var(--danger)", marginBottom: "12px" }}>{toggleError}</div>}
       <div style={{ marginBottom: "22px" }}>
         <div className="eyebrow" style={{ marginBottom: "8px" }}>Configuration / Integrations</div>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px" }}>
