@@ -1046,10 +1046,19 @@ export class ReviewOrchestrator {
       const reviewPatchset = details.currentPatchset;
       const fixedFindings = activePrior.filter((comment) => assessmentById.get(comment.id)?.status === "fixed");
       const fixedHashes = new Set(fixedFindings.map((comment) => comment.commentHash));
-      if (fixedFindings.length > 0) await this.assertReviewStillActive(taskId);
-      for (const comment of fixedFindings) {
-        await this.deps.stateStore.markReviewCommentResolved(comment.id);
-      }
+      // Fixed findings stay active until publication succeeds so a failed or
+      // retried publication can still report them. A regression with the same
+      // hash retires its fixed predecessor first because only one active row
+      // per hash may exist.
+      const retiredFixedIds = new Set<number>();
+      const retireFixedFindings = async (hash?: string): Promise<void> => {
+        for (const comment of fixedFindings) {
+          if (retiredFixedIds.has(comment.id) || (hash !== undefined && comment.commentHash !== hash)) continue;
+          await this.assertReviewStillActive(taskId);
+          await this.deps.stateStore.markReviewCommentResolved(comment.id);
+          retiredFixedIds.add(comment.id);
+        }
+      };
 
       // Deduplicate inline comments against ones VE already posted on
       // this change. Only newly-found issues are published; the overall vote and
@@ -1161,6 +1170,7 @@ export class ReviewOrchestrator {
                 throw new Error("Provider reported a folded finding with an inline comment link");
               }
               if (persistedFindingHashes.has(commentHash)) return;
+              await retireFixedFindings(commentHash);
               await this.deps.stateStore.markReviewCommentsPosted(taskId, changeId, [{
                 commentHash,
                 file: finding.comment.file,
@@ -1184,6 +1194,7 @@ export class ReviewOrchestrator {
           if ([...expectedInlineHashes].some((hash) => !returnedInlineHashes.has(hash))) {
             throw new Error("Provider omitted a published finding from the review overview");
           }
+          await retireFixedFindings();
           for (const finding of posted.findings) {
             await publication.onFindingPosted(finding);
           }

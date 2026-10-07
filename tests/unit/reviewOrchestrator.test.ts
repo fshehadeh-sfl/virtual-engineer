@@ -1211,8 +1211,66 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       expect.objectContaining({ comments: [expect.objectContaining(recurring)] }),
       expect.any(AbortSignal));
     const resolvedOrder = mocks.store.markReviewCommentResolved.mock.invocationCallOrder[0] as number;
-    const postedOrder = postReviewOverview.mock.invocationCallOrder[0] as number;
-    expect(resolvedOrder).toBeLessThan(postedOrder);
+    const publishOrder = postReviewOverview.mock.invocationCallOrder[0] as number;
+    const persistedOrder = mocks.store.markReviewCommentsPosted.mock.invocationCallOrder[0] as number;
+    expect(publishOrder).toBeLessThan(resolvedOrder);
+    expect(resolvedOrder).toBeLessThan(persistedOrder);
+  });
+
+  it("retires a fixed finding before persisting its regression reported mid-publication", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const recurring = { file: "src/a.ts", line: 1, message: "Bug", severity: "error" };
+    const { runner } = makeWorkspaceRunner(hostedOutput([recurring], [
+      { findingId: 24, status: "fixed", evidence: "Original path now validates input." },
+    ]));
+    mocks.store.getPostedReviewComments.mockResolvedValue([{
+      id: 24, resolved: false, ...recurring, providerCommentUrl: null,
+      commentHash: computeCommentHash(recurring),
+    }]);
+    mocks.store.getPostedReviewCommentHashes.mockResolvedValue(new Set([computeCommentHash(recurring)]));
+    mocks.store.markReviewCommentResolved = vi.fn(async () => undefined);
+    const postReviewOverview = vi.fn(async (_id, _revision, publication) => {
+      const finding = {
+        comment: publication.comments[0],
+        url: "https://example.test/new",
+        providerThreadId: "new",
+        disposition: "inline" as const,
+      };
+      await publication.onFindingPosted?.(finding);
+      expect(mocks.store.markReviewCommentResolved).toHaveBeenCalledWith(24);
+      return { findings: [finding], remoteId: "note-1", advisoryOnly: false };
+    });
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(mocks.store.markReviewCommentResolved).toHaveBeenCalledOnce();
+    const resolvedOrder = mocks.store.markReviewCommentResolved.mock.invocationCallOrder[0] as number;
+    const persistedOrder = mocks.store.markReviewCommentsPosted.mock.invocationCallOrder[0] as number;
+    expect(resolvedOrder).toBeLessThan(persistedOrder);
+  });
+
+  it("keeps fixed findings active when the hosted overview fails to publish", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([], [
+      { findingId: 31, status: "fixed", evidence: "The guard was added." },
+    ]));
+    mocks.store.getPostedReviewComments.mockResolvedValue([{
+      id: 31, resolved: false, file: "src/a.ts", line: 1,
+      message: "Prior", severity: "error", providerCommentUrl: null,
+    }]);
+    mocks.store.markReviewCommentResolved = vi.fn(async () => undefined);
+    mocks.provider = {
+      ...mocks.provider,
+      kind: "github",
+      postReviewOverview: vi.fn(async () => { throw new Error("overview failed"); }),
+    };
+
+    await expect(new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId))
+      .rejects.toThrow("overview failed");
+    expect(mocks.store.markReviewCommentResolved).not.toHaveBeenCalled();
   });
 
   it("does not re-post an unchanged hosted verdict or inline finding on re-review", async () => {

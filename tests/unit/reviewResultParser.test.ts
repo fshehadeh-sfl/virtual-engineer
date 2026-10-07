@@ -118,6 +118,22 @@ describe("parseReviewResult", () => {
     )).toThrow(ReviewResultParseError);
   });
 
+  it("rejects whitespace-only hosted overview and assessment evidence", () => {
+    const hosted = (changeOverview: string, evidence: string): string => wrap({
+      comments: [],
+      summary: "ready",
+      changeOverview,
+      requiredAction: "",
+      priorFindingAssessments: [{ findingId: 1, status: "fixed", evidence }],
+      reviewAction: "APPROVE",
+      replies: [],
+    });
+    expect(() => parseReviewResult(hosted("Adds validation.", " \n\t "), "github"))
+      .toThrow(ReviewResultParseError);
+    expect(() => parseReviewResult(hosted("   ", "The guard was added."), "github"))
+      .toThrow(ReviewResultParseError);
+  });
+
   it("rejects a native contract belonging to another integration", () => {
     expect(() =>
       parseReviewResult(

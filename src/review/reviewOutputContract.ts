@@ -34,12 +34,12 @@ const SharedPayloadShape = {
 const PriorFindingAssessmentSchema = z.object({
   findingId: z.number().int().positive(),
   status: z.enum(["still_present", "fixed", "uncertain"]),
-  evidence: z.string().min(1),
+  evidence: z.string().trim().min(1),
 }).strict();
 
 const HostedPayloadShape = {
   ...SharedPayloadShape,
-  changeOverview: z.string().min(1),
+  changeOverview: z.string().trim().min(1),
   requiredAction: z.string(),
   priorFindingAssessments: z.array(PriorFindingAssessmentSchema),
 };
