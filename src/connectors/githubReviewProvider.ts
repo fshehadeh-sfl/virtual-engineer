@@ -38,7 +38,8 @@ const GitHubPrSchema = z.object({
 const GitHubPrFileSchema = z.object({
   filename: z.string(),
   status: z.string(),
-  patch: z.string().optional().default(""),
+  patch: z.string().optional(),
+  changes: z.number().int().nonnegative().optional(),
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 const GitHubPendingReviewSchema = z.object({
@@ -59,6 +60,7 @@ const GitHubCompareResponseSchema = z.object({
     filename: z.string(),
     status: z.string(),
     patch: z.string().nullable().optional(),
+    changes: z.number().int().nonnegative().optional(),
   })).default([]),
 });
 
@@ -280,6 +282,7 @@ export class GitHubReviewProvider implements ReviewProvider {
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const files = await this.getPrFiles(this.prUrl(owner, repo, prNumber), signal);
+    assertTextualPatchesPresent(files, `GitHub PR ${owner}/${repo}#${prNumber}`);
 
     return {
       changeId,
@@ -289,7 +292,7 @@ export class GitHubReviewProvider implements ReviewProvider {
       files: files.map((f): ReviewDiffFile => ({
         path: f.filename,
         status: mapFileStatus(f.status),
-        patch: f.patch,
+        patch: f.patch ?? "",
       })),
     };
   }
@@ -323,11 +326,15 @@ export class GitHubReviewProvider implements ReviewProvider {
         signal !== undefined ? { signal } : undefined,
       )
     );
+    assertTextualPatchesPresent(compare.files, `GitHub PR ${owner}/${repo}#${prNumber} inter-patchset comparison`);
     const files: ReviewDiffFile[] = compare.files.map((file) => ({
       path: file.filename,
       status: mapFileStatus(file.status),
       patch: file.patch ?? "",
     }));
+    if (compare.files.length >= 300) {
+      throw new Error(`GitHub PR ${owner}/${repo}#${prNumber}: inter-patchset comparison reached GitHub's 300-file limit`);
+    }
 
     log.info(
       { changeId: details.changeId, fromPatchset, toPatchset, fileCount: files.length },
@@ -580,12 +587,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     const validLinesByFile = new Map<string, Set<number>>();
     if (positiveLineComments.length > 0) {
       try {
-        const files = GitHubPrFileListSchema.parse(
-          await this.fetchJson(
-            `${this.prUrl(owner, repo, prNumber)}/files?per_page=300`,
-            signal !== undefined ? { signal } : undefined,
-          )
-        );
+        const files = await this.getPrFiles(this.prUrl(owner, repo, prNumber), signal);
         for (const f of files) {
           if (f.patch) {
             validLinesByFile.set(f.filename, parsePatchNewLineNumbers(f.patch));
@@ -935,6 +937,21 @@ function mapFileStatus(status: string): ReviewFileStatus {
     case "removed": return "deleted";
     case "renamed": return "renamed";
     default: return "modified";
+  }
+}
+
+/**
+ * GitHub omits `patch` for binary files and pure renames/mode changes (zero
+ * changed lines) as well as for oversized text diffs. Only the latter makes the
+ * diff incomplete; missing line counts are treated as unknown and rejected.
+ */
+function assertTextualPatchesPresent(
+  files: ReadonlyArray<{ filename: string; patch?: string | null | undefined; changes?: number | undefined }>,
+  context: string,
+): void {
+  const missing = files.find((file) => (file.patch === undefined || file.patch === null) && file.changes !== 0);
+  if (missing !== undefined) {
+    throw new Error(`${context}: patch unavailable for ${missing.filename}; cannot review an incomplete diff`);
   }
 }
 

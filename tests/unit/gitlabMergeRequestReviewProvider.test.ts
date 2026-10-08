@@ -181,6 +181,21 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect(diff.patchset).toBe(99);
   });
 
+  it("rejects an overflowed MR diff instead of reviewing a subset", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...CHANGES_BODY, overflow: true }));
+    await expect(new GitLabMergeRequestReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/overflow|incomplete/i);
+  });
+
+  it("rejects MR changes missing a patch", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      ...CHANGES_BODY,
+      changes: [{ old_path: "src/missing.ts", new_path: "src/missing.ts" }],
+    }));
+    await expect(new GitLabMergeRequestReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/patch.*src\/missing\.ts/i);
+  });
+
   it("postReviewWithComments posts inline discussions, a summary note, and approves on +1", async () => {
     // 1) changes, 2) discussion, 3) note, 4) project path, 5) own review state, 6) approve
     fetchMock

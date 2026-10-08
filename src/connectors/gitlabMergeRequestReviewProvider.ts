@@ -69,7 +69,7 @@ interface InlinePositionTarget {
 
 /** Index changed files by new path, keeping the original path GitLab requires for renamed-file positions. */
 function inlinePositionTargets(
-  changes: ReadonlyArray<{ old_path: string; new_path: string; diff: string }>,
+  changes: ReadonlyArray<{ old_path: string; new_path: string; diff?: string | undefined }>,
 ): Map<string, InlinePositionTarget> {
   const targets = new Map<string, InlinePositionTarget>();
   for (const change of changes) {
@@ -77,7 +77,7 @@ function inlinePositionTargets(
     targets.set(newPath, {
       oldPath: change.old_path || newPath,
       newPath,
-      lines: parsePatchNewLineNumbers(change.diff),
+      lines: parsePatchNewLineNumbers(change.diff ?? ""),
     });
   }
   return targets;
@@ -89,12 +89,13 @@ const MrChangeSchema = z.object({
   new_file: z.boolean().optional().default(false),
   renamed_file: z.boolean().optional().default(false),
   deleted_file: z.boolean().optional().default(false),
-  diff: z.string().optional().default(""),
+  diff: z.string().optional(),
 });
 
 const MrChangesResponseSchema = z.object({
-  changes: z.array(MrChangeSchema).optional().default([]),
+  changes: z.array(MrChangeSchema),
   diff_refs: DiffRefsSchema,
+  overflow: z.boolean().optional().default(false),
 });
 
 const ProjectSchema = z.object({ path_with_namespace: z.string() });
@@ -339,6 +340,13 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
         signal !== undefined ? { signal } : undefined,
       )
     );
+    if (res.overflow) {
+      throw new Error(`GitLab MR ${project}#${iid}: diff overflow; cannot review an incomplete diff`);
+    }
+    const missingPatch = res.changes.find((change) => change.diff === undefined);
+    if (missingPatch !== undefined) {
+      throw new Error(`GitLab MR ${project}#${iid}: patch unavailable for ${missingPatch.new_path || missingPatch.old_path}; cannot review an incomplete diff`);
+    }
 
     return {
       changeId,
@@ -349,7 +357,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
         (ch): ReviewDiffFile => ({
           path: ch.new_path || ch.old_path,
           status: mapFileStatus(ch),
-          patch: ch.diff,
+          patch: ch.diff ?? "",
         })
       ),
     };
@@ -576,7 +584,7 @@ export class GitLabMergeRequestReviewProvider implements ReviewProvider {
           )
         );
         diffRefs = res.diff_refs ?? null;
-        positions = inlinePositionTargets(res.changes.filter((change) => change.diff.length > 0));
+        positions = inlinePositionTargets(res.changes.filter((change) => (change.diff ?? "").length > 0));
       } catch (err) {
         if (signal?.aborted === true) throw signal.reason ?? err;
         log.warn({ project, iid, err }, "failed to fetch MR changes for line validation; folding comments into summary");

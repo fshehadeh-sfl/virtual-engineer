@@ -1753,6 +1753,44 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(runner.runReviewInDocker).not.toHaveBeenCalled();
   });
 
+  it("passes every large diff file to the agent without posting a partial review", async () => {
+    const initial = makeTask();
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    const largePatch = "+large\n".repeat(10_000);
+    mocks.provider.getChangeDiff = vi.fn(async () => makeDiff({
+      files: [
+        { path: "src/first.ts", status: "modified", patch: largePatch },
+        { path: "src/last.ts", status: "modified", patch: "+last file" },
+      ],
+    }));
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await orch.runReview(initial.taskId);
+
+    const prompt = (runner.runReviewInDocker.mock.calls[0]?.[1] as { prompt: string }).prompt;
+    expect(prompt).toContain(largePatch);
+    expect(prompt).toContain("### src/last.ts (modified)");
+    expect(prompt).toContain("+last file");
+    expect(prompt).not.toContain("diff truncated");
+  });
+
+  it("fails without posting when the provider reports an incomplete diff", async () => {
+    const initial = makeTask();
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner();
+    mocks.provider.getChangeDiff = vi.fn(async () => {
+      throw new Error("diff overflow; cannot review an incomplete diff");
+    });
+    const orch = new ReviewOrchestrator(makeDeps(mocks, runner));
+
+    await expect(orch.runReview(initial.taskId)).rejects.toThrow("diff overflow");
+    expect(mocks.store.transition).toHaveBeenCalledWith(initial.taskId, "REVIEW_FAILED");
+    expect(runner.runReviewInDocker).not.toHaveBeenCalled();
+    expect(mocks.provider.postReviewComments).not.toHaveBeenCalled();
+    expect(mocks.provider.vote).not.toHaveBeenCalled();
+  });
+
   it("resolves a distinct adapter/model/token per task when projects share an orchestrator", async () => {
     const initial = makeTask({ state: "REVIEW_PENDING", projectId: makeProjectId("proj-1") });
     const mocks = makeMocks(initial);

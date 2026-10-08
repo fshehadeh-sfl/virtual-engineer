@@ -582,7 +582,7 @@ describe("GitHubReviewProvider", () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(firstPage))
       .mockResolvedValueOnce(jsonResponse([
-        { filename: "assets/picture.png", status: "added" },
+        { filename: "assets/picture.png", status: "added", additions: 0, deletions: 0, changes: 0 },
         { filename: "src/late.ts", status: "modified", patch: "@@ -1 +1 @@\n+late" },
       ]));
     const result = await new GitHubReviewProvider(config).getChangeDiff(cid, 42, controller.signal);
@@ -622,6 +622,52 @@ describe("GitHubReviewProvider", () => {
     ]));
     const r = await new GitHubReviewProvider(config).getChangeDiff(cid, 42);
     expect(r.patchset).toBe(42);
+  });
+
+  it("getChangeDiff fetches every page of PR files", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({
+      filename: `src/file-${i}.ts`, status: "modified", patch: `+${i}`,
+    }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(firstPage))
+      .mockResolvedValueOnce(jsonResponse([
+        { filename: "src/last.ts", status: "added", patch: "+last" },
+      ]));
+
+    const result = await new GitHubReviewProvider(config).getChangeDiff(cid);
+    expect(result.files).toHaveLength(101);
+    expect(result.files[100]?.patch).toBe("+last");
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("/files?per_page=100&page=2");
+  });
+
+  it("rejects PR files with unavailable patches instead of approving an incomplete review", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/missing.ts", status: "modified", additions: 4000, deletions: 12, changes: 4012 },
+    ]));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/patch.*src\/missing\.ts/i);
+  });
+
+  it("rejects PR files missing both patch and line counts", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "src/missing.ts", status: "modified" },
+    ]));
+    await expect(new GitHubReviewProvider(config).getChangeDiff(cid))
+      .rejects.toThrow(/patch.*src\/missing\.ts/i);
+  });
+
+  it("accepts binary files and pure renames that GitHub lists without a patch", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([
+      { filename: "docs/logo.png", status: "added", additions: 0, deletions: 0, changes: 0 },
+      { filename: "src/new-name.ts", status: "renamed", additions: 0, deletions: 0, changes: 0 },
+      { filename: "src/a.ts", status: "modified", additions: 1, deletions: 0, changes: 1, patch: "@@\n+new" },
+    ]));
+    const result = await new GitHubReviewProvider(config).getChangeDiff(cid);
+    expect(result.files).toEqual([
+      { path: "docs/logo.png", status: "added", patch: "" },
+      { path: "src/new-name.ts", status: "renamed", patch: "" },
+      { path: "src/a.ts", status: "modified", patch: "@@\n+new" },
+    ]);
   });
 
   it("getInterPatchsetDiff compares the old reviewed commit with the current head", async () => {
@@ -677,6 +723,46 @@ describe("GitHubReviewProvider", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toBe(
       `https://api.github.com/repos/octocat/hello-world/compare/${fromSha}...${toSha}?per_page=300`
     );
+  });
+
+  it("getInterPatchsetDiff rejects compared text files whose patch GitHub omitted", async () => {
+    const fromSha = "1111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const toSha = "2222222222222bbbbbbbbbbbbbbbbbbbbbbbbb";
+    const details: ReviewChangeDetails = {
+      changeId: cid,
+      changeNumber: 42,
+      subject: "Add feature X",
+      description: "",
+      ownerAccountId: "123",
+      currentPatchset: patchsetFromRevisionSha(toSha),
+      status: "OPEN",
+      project: "octocat/hello-world",
+      targetBranch: "main",
+      url: "https://github.com/octocat/hello-world/pull/42",
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({
+        number: 42,
+        state: "open",
+        title: "Add feature X",
+        html_url: "https://github.com/octocat/hello-world/pull/42",
+        merged: false,
+        base: { ref: "main", repo: { full_name: "octocat/hello-world" } },
+        head: { ref: "feature-x", sha: toSha },
+      }))
+      .mockResolvedValueOnce(jsonResponse([{ sha: fromSha }]))
+      .mockResolvedValueOnce(jsonResponse({
+        files: [
+          { filename: "docs/logo.png", status: "modified", additions: 0, deletions: 0, changes: 0 },
+          { filename: "src/huge.ts", status: "modified", additions: 9000, deletions: 0, changes: 9000 },
+        ],
+      }));
+
+    await expect(new GitHubReviewProvider(config).getInterPatchsetDiff(
+      details,
+      patchsetFromRevisionSha(fromSha),
+      patchsetFromRevisionSha(toSha),
+    )).rejects.toThrow(/patch.*src\/huge\.ts/i);
   });
 
   it("postReviewWithComments posts an APPROVE review with inline comments", async () => {
