@@ -74,10 +74,39 @@ describe("renderReviewOverview", () => {
         { comment: { ...blocking, message: "Unknown previous issue." }, status: "uncertain" },
       ],
     });
-    expect(body).toContain("**Since the last review:** 1 previously reported finding still present");
+    expect(body).toContain("**Since the last review:** No new findings · 1 previously reported finding still present");
     expect(body).toContain("1 verified fix");
     expect(body).toContain("**Blocking · Previously reported**");
     expect(body).not.toContain("Unknown previous issue.");
+  });
+
+  it("states that a re-review found nothing new while keeping still-open findings listed", () => {
+    const body = renderReviewOverview({
+      score: -1,
+      summary: "The earlier issue is still open.",
+      changeOverview: "Updates validation.",
+      requiredAction: "Fix the validation.",
+      reReview: true,
+      findings: [
+        { comment: blocking, status: "previous", url: "https://github.com/acme/billing/pull/42#discussion_r123" },
+      ],
+    });
+    expect(body).toContain("**Since the last review:** No new findings · 1 previously reported finding still present");
+    expect(body).toContain("**Blocking · Previously reported**");
+    expect(body).toContain("(https://github.com/acme/billing/pull/42#discussion_r123)");
+  });
+
+  it("states that a clean re-review found nothing new", () => {
+    const body = renderReviewOverview({
+      score: 1,
+      summary: "Nothing else to flag.",
+      changeOverview: "Updates validation.",
+      reReview: true,
+      findings: [],
+    });
+    expect(body).toContain("🟢 **Looks good**");
+    expect(body).toContain("**Since the last review:** No new findings");
+    expect(body).toContain("No findings to report.");
   });
 
   it("keeps untrusted provider URLs and paths inside the finding link", () => {

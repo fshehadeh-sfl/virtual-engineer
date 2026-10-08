@@ -1273,7 +1273,7 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
     expect(mocks.store.markReviewCommentResolved).not.toHaveBeenCalled();
   });
 
-  it("does not re-post an unchanged hosted verdict or inline finding on re-review", async () => {
+  it("publishes an unchanged hosted verdict on re-review, linking still-open findings without re-posting them inline", async () => {
     const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
     const mocks = makeMocks(initial);
     const recurring = { file: "src/a.ts", line: 1, message: "Bug", severity: "error" };
@@ -1286,7 +1286,9 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
       commentHash: computeCommentHash(recurring),
     }]);
     mocks.store.getPostedReviewCommentHashes.mockResolvedValue(new Set([computeCommentHash(recurring)]));
-    const postReviewOverview = vi.fn();
+    const postReviewOverview = vi.fn(async () => ({
+      findings: [], remoteId: "456", advisoryOnly: false,
+    }));
     mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
     mocks.store.getAgentCycles.mockResolvedValue([
       { result: { metadata: { vote: -1 } } },
@@ -1294,8 +1296,35 @@ describe("ReviewOrchestrator.runReview â happy path", () => {
 
     await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
 
-    expect(postReviewOverview).not.toHaveBeenCalled();
+    expect(postReviewOverview).toHaveBeenCalledWith(CHANGE_ID, 2, expect.objectContaining({
+      comments: [],
+      folded: [],
+      reReview: true,
+      previous: [{
+        comment: expect.objectContaining({ message: "Bug" }),
+        url: "https://example.test/old",
+      }],
+    }), expect.any(AbortSignal));
     expect(mocks.store.markReviewCommentsPosted).not.toHaveBeenCalled();
+  });
+
+  it("approves a hosted re-review with nothing new instead of staying silent", async () => {
+    const initial = makeTask({ state: "REVIEW_WATCHING", cycleCount: 1, reviewedPatchset: 1 });
+    const mocks = makeMocks(initial);
+    const { runner } = makeWorkspaceRunner(hostedOutput([]).replace('"REQUEST_CHANGES"', '"APPROVE"'));
+    const postReviewOverview = vi.fn(async () => ({
+      findings: [], remoteId: "789", advisoryOnly: false,
+    }));
+    mocks.provider = { ...mocks.provider, kind: "github", postReviewOverview };
+    mocks.store.getAgentCycles.mockResolvedValue([
+      { result: { metadata: { vote: 1 } } },
+    ]);
+
+    await new ReviewOrchestrator(makeDeps(mocks, runner)).runReview(initial.taskId);
+
+    expect(postReviewOverview).toHaveBeenCalledWith(CHANGE_ID, 2, expect.objectContaining({
+      score: 1, comments: [], previous: [], reReview: true,
+    }), expect.any(AbortSignal));
   });
 
   it("does not re-post summary or vote on a re-review when nothing is new and the verdict is unchanged", async () => {

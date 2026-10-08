@@ -91,7 +91,9 @@ export function renderReviewOverview(input: ReviewOverviewInput): string {
   const newlyReported = visible.length - previouslyReported;
   if (input.reReview === true || previouslyReported > 0 || (input.fixedCount ?? 0) > 0) {
     const parts = [
-      ...(newlyReported > 0 ? [`${newlyReported} newly reported finding${newlyReported === 1 ? "" : "s"}`] : []),
+      newlyReported > 0
+        ? `${newlyReported} newly reported finding${newlyReported === 1 ? "" : "s"}`
+        : "No new findings",
       ...(previouslyReported > 0
         ? [`${previouslyReported} previously reported finding${previouslyReported === 1 ? "" : "s"} still present`]
         : []),
@@ -99,7 +101,7 @@ export function renderReviewOverview(input: ReviewOverviewInput): string {
         ? [`${input.fixedCount} verified fix${input.fixedCount === 1 ? "" : "es"}`]
         : []),
     ];
-    if (parts.length > 0) sections.push("", `**Since the last review:** ${parts.join(" · ")}`);
+    sections.push("", `**Since the last review:** ${parts.join(" · ")}`);
   }
   sections.push("", `**Findings:** ${countText}`);
   if (input.score < 0 && input.requiredAction?.trim()) {
