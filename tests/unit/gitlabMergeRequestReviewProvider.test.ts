@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitLabMergeRequestReviewProvider } from "../../src/connectors/gitlabMergeRequestReviewProvider.js";
-import type { ExternalChangeId } from "../../src/interfaces.js";
+import type { ExternalChangeId, ReviewOverviewPublication, PublishedReviewFinding } from "../../src/interfaces.js";
 
 const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -22,7 +22,15 @@ function pagedResponse(body: unknown, nextPage: number | null): Response {
   });
 }
 
+function ownReviewers(reviewState: string | null): object {
+  return { reviewers: { nodes: [
+    { id: "gid://gitlab/User/7", mergeRequestInteraction: { reviewState: "REQUESTED_CHANGES" } },
+    { id: "gid://gitlab/User/9", mergeRequestInteraction: { reviewState } },
+  ] } };
+}
+
 const cid = "42" as unknown as ExternalChangeId;
+const projectCid = "group/proj#42" as ExternalChangeId;
 
 const MR_BODY = {
   iid: 42,
@@ -52,6 +60,32 @@ const CHANGES_BODY = {
     },
   ],
 };
+
+function overviewPublication(): ReviewOverviewPublication {
+  return {
+    details: {
+      changeId: projectCid,
+      changeNumber: 42,
+      subject: "Add feature X",
+      description: "",
+      ownerAccountId: "7",
+      currentPatchset: 1,
+      status: "OPEN",
+      project: "group/proj",
+      targetBranch: "main",
+      url: MR_BODY.web_url,
+      headSha: "head",
+    },
+    summary: "Overall summary",
+    changeOverview: "Adds feature X",
+    requiredAction: "Fix this bug",
+    score: 0,
+    comments: [],
+    folded: [],
+    previous: [],
+    reReview: false,
+  };
+}
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -163,11 +197,14 @@ describe("GitLabMergeRequestReviewProvider", () => {
   });
 
   it("postReviewWithComments posts inline discussions, a summary note, and approves on +1", async () => {
-    // 1) fetch changes (line validation + diff_refs), 2) discussion, 3) note, 4) approve
+    // 1) changes, 2) discussion, 3) note, 4) project path, 5) own review state, 6) approve
     fetchMock
       .mockResolvedValueOnce(jsonResponse(CHANGES_BODY))
       .mockResolvedValueOnce(jsonResponse({ id: "d1" }))
       .mockResolvedValueOnce(jsonResponse({ id: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ path_with_namespace: "group/proj" }))
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
       .mockResolvedValueOnce(jsonResponse({}));
 
     const p = new GitLabMergeRequestReviewProvider(config);
@@ -186,7 +223,11 @@ describe("GitLabMergeRequestReviewProvider", () => {
   });
 
   it("posts a neutral review without changing MR approval", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ id: 1 }));
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ id: 1 }))
+      .mockResolvedValueOnce(jsonResponse({ path_with_namespace: "group/proj" }))
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("UNREVIEWED") } } }));
 
     await new GitLabMergeRequestReviewProvider(config).postReviewWithComments(
       cid,
@@ -247,14 +288,469 @@ describe("GitLabMergeRequestReviewProvider", () => {
     expect(body.body).not.toContain("`src/a.ts:0`");
   });
 
-  it("vote(-1) unapproves the MR", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({})); // unapprove (no inline, no note)
+  it("vote(-1) requests changes through GraphQL and verifies its own reviewer state", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ path_with_namespace: "group/proj" }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { mergeRequestRequestChanges: {
+          errors: [],
+          mergeRequest: ownReviewers("REQUESTED_CHANGES"),
+        } },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }));
     const p = new GitLabMergeRequestReviewProvider(config);
     await p.vote(cid, 1, -1);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("https://gitlab.example.com/api/graphql");
+    expect(init).toEqual(expect.objectContaining({
+      method: "POST",
+      headers: expect.objectContaining({ Authorization: "Bearer glpat_test" }),
+    }));
+    expect(JSON.parse(String(init.body))).toEqual({
+      query: expect.stringContaining("mergeRequestRequestChanges"),
+      variables: { input: { projectPath: "group/proj", iid: "42" } },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("falls back to advisory REST unapprove on an unsupported mutation and exposes the outcome", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ errors: [{ message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" }] }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    const p = new GitLabMergeRequestReviewProvider(config);
+    await expect(p.postReviewWithDecision("group/proj#42" as ExternalChangeId, 1, [], "", -1))
+      .resolves.toBe("advisory_only");
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://gitlab.example.com/api/v4/projects/100/merge_requests/42/unapprove",
+      "https://gitlab.example.com/api/v4/projects/group%2Fproj/merge_requests/42/unapprove",
       expect.objectContaining({ method: "POST" })
     );
+  });
+
+  it("falls back when GitLab explicitly rejects native request changes for the tier", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { mergeRequestRequestChanges: {
+        errors: ["Requesting changes is not available on your subscription"], mergeRequest: null,
+      } } }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    await expect(new GitLabMergeRequestReviewProvider(config).postReviewWithDecision(
+      "group/proj#42" as ExternalChangeId, 1, [], "", -1,
+    )).resolves.toBe("advisory_only");
+  });
+
+  it("treats a missing GraphQL endpoint as advisory only", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ message: "Not Found" }, 404))
+      .mockResolvedValueOnce(jsonResponse({}));
+    await expect(new GitLabMergeRequestReviewProvider(config).postReviewWithDecision(
+      "group/proj#42" as ExternalChangeId, 1, [], "", -1,
+    )).resolves.toBe("advisory_only");
+  });
+
+  it.each([
+    [401, { message: "Unauthorized" }],
+    [403, { message: "Forbidden" }],
+    [500, { message: "Internal Server Error" }],
+    [200, { errors: [{ message: "Access denied" }] }],
+    [200, { data: { mergeRequestRequestChanges: { errors: ["Permission denied"], mergeRequest: null } } }],
+    [200, { data: { mergeRequestRequestChanges: { errors: [], mergeRequest: null } } }],
+  ])("does not silently fall back on errors or unverified requests (HTTP %i)", async (status, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body, status));
+    await expect(new GitLabMergeRequestReviewProvider(config).vote(
+      "group/proj#42" as ExternalChangeId, 1, -1,
+    )).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim native success unless its own reviewer requests changes", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { mergeRequestRequestChanges: {
+        errors: [], mergeRequest: ownReviewers("UNREVIEWED"),
+      } } }))
+      .mockResolvedValueOnce(jsonResponse({ id: 9, username: "ve-bot" }));
+    await expect(new GitLabMergeRequestReviewProvider(config).vote(
+      "group/proj#42" as ExternalChangeId, 1, -1,
+    )).rejects.toThrow("did not confirm own REQUESTED_CHANGES");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("forwards abort signals and does not fall back on aborted requests", async () => {
+    const controller = new AbortController();
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => {
+      expect(init.signal).toBe(controller.signal);
+      controller.abort();
+      return Promise.reject(new DOMException("Aborted", "AbortError"));
+    });
+    await expect(new GitLabMergeRequestReviewProvider(config).vote(
+      "group/proj#42" as ExternalChangeId, 1, -1, undefined, controller.signal,
+    )).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes an existing own changes request before a neutral decision", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("REQUESTED_CHANGES") } } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { mergeRequestDestroyRequestedChanges: {
+        errors: [], mergeRequest: ownReviewers("UNREVIEWED"),
+      } } }));
+    await new GitLabMergeRequestReviewProvider(config).vote("group/proj#42" as ExternalChangeId, 1, 0);
+    const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body)) as { query: string };
+    expect(body.query).toContain("mergeRequestDestroyRequestedChanges");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes an existing own changes request before approving", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("REQUESTED_CHANGES") } } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { mergeRequestDestroyRequestedChanges: {
+        errors: [], mergeRequest: ownReviewers(null),
+      } } }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    await new GitLabMergeRequestReviewProvider(config).vote("group/proj#42" as ExternalChangeId, 1, 1);
+    expect(fetchMock.mock.calls.map((call: unknown[]) => String(call[0]))).toEqual([
+      "https://gitlab.example.com/api/graphql",
+      "https://gitlab.example.com/api/graphql",
+      "https://gitlab.example.com/api/v4/projects/group%2Fproj/merge_requests/42/approve",
+    ]);
+  });
+
+  it("treats VE missing from the reviewer list as having no changes request to clear", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: { reviewers: { nodes: [] } } } } }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    await new GitLabMergeRequestReviewProvider(config).vote("group/proj#42" as ExternalChangeId, 1, 1);
+    expect(fetchMock.mock.calls.map((call: unknown[]) => String(call[0]))).toEqual([
+      "https://gitlab.example.com/api/graphql",
+      "https://gitlab.example.com/api/v4/projects/group%2Fproj/merge_requests/42/approve",
+    ]);
+  });
+
+  it.each([
+    ["unknown current user", { currentUser: null, project: { mergeRequest: { reviewers: { nodes: [] } } } }],
+    ["inaccessible merge request", { currentUser: { id: "gid://gitlab/User/9" }, project: { mergeRequest: null } }],
+  ])("does not approve when own reviewer state cannot be determined (%s)", async (_label, data) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data }));
+    await expect(new GitLabMergeRequestReviewProvider(config).vote(
+      "group/proj#42" as ExternalChangeId, 1, 1,
+    )).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not approve when removing a previous changes request fails", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("REQUESTED_CHANGES") } } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { mergeRequestDestroyRequestedChanges: {
+        errors: ["Permission denied"], mergeRequest: null,
+      } } }));
+    await expect(new GitLabMergeRequestReviewProvider(config).vote(
+      "group/proj#42" as ExternalChangeId, 1, 1,
+    )).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe("instances without native reviewer state", () => {
+    const missingState = { errors: [{
+      message: "Field 'reviewState' doesn't exist on type 'UserMergeRequestInteraction'",
+    }] };
+    const noNativeMutations = { errors: [
+      { message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" },
+      { message: "Field 'mergeRequestDestroyRequestedChanges' doesn't exist on type 'Mutation'" },
+    ] };
+
+    it.each([0, 1])("allows decision %i when review-state and both native mutations are absent", async (score) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockResolvedValueOnce(jsonResponse(noNativeMutations))
+        .mockResolvedValueOnce(jsonResponse({}));
+      await new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, score);
+      const [url, options] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe("https://gitlab.example.com/api/graphql");
+      const probe = JSON.parse(String(options.body)) as { query: string; variables: object };
+      expect(probe.query).toContain("mergeRequestRequestChanges");
+      expect(probe.query).toContain("mergeRequestDestroyRequestedChanges");
+      expect(probe.query).not.toContain("input:");
+      expect(probe.variables).toEqual({});
+      expect(fetchMock).toHaveBeenCalledTimes(score === 1 ? 3 : 2);
+      if (score === 1) {
+        expect(fetchMock.mock.calls[2]?.[0]).toBe(`${config.baseUrl}/api/v4/projects/group%2Fproj/merge_requests/42/approve`);
+      }
+    });
+
+    it("still publishes a hosted neutral overview on explicitly unsupported schema", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockResolvedValueOnce(jsonResponse(noNativeMutations))
+        .mockResolvedValueOnce(jsonResponse({ id: 103 }));
+      const result = await new GitLabMergeRequestReviewProvider(config).postReviewOverview(
+        projectCid, 1, overviewPublication(),
+      );
+      expect(result.remoteId).toBe("103");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("recognizes the absent reviewer interaction field only when mutations are also absent", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ errors: [{
+          message: 'Cannot query field "mergeRequestInteraction" on type "MergeRequestReviewer".',
+        }] }))
+        .mockResolvedValueOnce(jsonResponse(noNativeMutations));
+      await new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, 0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      { errors: [
+        { message: "Field 'mergeRequestDestroyRequestedChanges' doesn't exist on type 'Mutation'" },
+        { message: "Field 'mergeRequestRequestChanges' is missing required arguments: input" },
+      ] },
+      { errors: [
+        { message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" },
+        { message: "Field 'mergeRequestDestroyRequestedChanges' is missing required arguments: input" },
+      ] },
+    ])("does not ignore an unconfirmed previous request if either native mutation exists", async (capabilities) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockResolvedValueOnce(jsonResponse(capabilities));
+      await expect(new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, 1))
+        .rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [{ errors: [{ message: "Access denied" }] }],
+      [{ errors: [{ message: "Field 'reviewState' doesn't exist on type 'UserMergeRequestInteraction'" }, { message: "Permission denied" }] }],
+      [{ errors: [{ message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" }] }],
+    ])("does not ignore authorization or incomplete schema responses (%o)", async (body) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockResolvedValueOnce(jsonResponse(body));
+      await expect(new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, 1))
+        .rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not skip native cleanup when the schema probe is temporarily unavailable", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockResolvedValueOnce(jsonResponse({ message: "Service Unavailable" }, 503));
+      await expect(new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, 1))
+        .rejects.toThrow("503");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("forwards abort signals to the schema probe instead of proceeding to approval", async () => {
+      const controller = new AbortController();
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(missingState))
+        .mockImplementationOnce((_url: string, init: RequestInit) => {
+          expect(init.signal).toBe(controller.signal);
+          controller.abort();
+          return Promise.reject(new DOMException("Aborted", "AbortError"));
+        });
+      await expect(new GitLabMergeRequestReviewProvider(config).vote(
+        projectCid, 1, 1, undefined, controller.signal,
+      )).rejects.toMatchObject({ name: "AbortError" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [403, { message: "Forbidden" }],
+      [500, { message: "Service Unavailable" }],
+      [200, { errors: [{ message: "Access denied" }] }],
+    ])("does not skip a previous request check on HTTP %i query failures", async (status, body) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(body, status));
+      await expect(new GitLabMergeRequestReviewProvider(config).vote(projectCid, 1, 1))
+        .rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("linked review overview", () => {
+    it("posts linked inline findings, preserves null previous URLs, and includes fixed count", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/a.ts", line: 2, message: "New bug", severity: "error" }];
+      publication.previous = [{ comment: { file: "src/old.ts", line: 0, message: "Old issue", severity: "warning" }, url: null }];
+      publication.folded = [{ file: "src/b.ts", line: 0, message: "Folded issue", severity: "warning" }];
+      publication.fixedCount = 2;
+      publication.reReview = true;
+      const events: string[] = [];
+      publication.onFindingPosted = async (finding: PublishedReviewFinding) => {
+        events.push(`finding:${finding.disposition}`);
+      };
+      publication.onPublicationCreated = async (remoteId: string) => {
+        events.push(`overview:${remoteId}`);
+      };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse(CHANGES_BODY))
+        .mockResolvedValueOnce(jsonResponse({ id: "discussion-1", notes: [{ id: 77 }] }))
+        .mockResolvedValueOnce(jsonResponse({ id: 101 }));
+
+      const result = await new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication);
+      expect(result).toEqual({
+        remoteId: "101",
+        advisoryOnly: false,
+        findings: [
+          {
+            comment: publication.comments[0],
+            url: `${MR_BODY.web_url}#note_77`,
+            providerThreadId: "discussion-1",
+            disposition: "inline",
+          },
+          {
+            comment: publication.folded[0],
+            url: null,
+            providerThreadId: null,
+            disposition: "folded",
+          },
+        ],
+      });
+      const noteCall = fetchMock.mock.calls.find((call: unknown[]) => String(call[0]).endsWith("/notes"));
+      const noteBody = JSON.parse((noteCall?.[1] as { body: string }).body) as { body: string };
+      expect(noteBody.body).toContain("2 verified fixes");
+      expect(noteBody.body).toContain("Old issue");
+      expect(noteBody.body).toContain("New bug");
+      expect(noteBody.body).toContain(`${MR_BODY.web_url}#note_77`);
+      expect(events).toEqual(["finding:inline", "overview:101", "finding:folded"]);
+    });
+
+    it("marks unsupported negative decisions advisory in the posted overview", async () => {
+      const publication = { ...overviewPublication(), score: -1 as const };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ errors: [{ message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" }] }))
+        .mockResolvedValueOnce(jsonResponse({}))
+        .mockResolvedValueOnce(jsonResponse({ id: 101 }));
+      const result = await new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication);
+      expect(result.advisoryOnly).toBe(true);
+      const noteCall = fetchMock.mock.calls.find((call: unknown[]) => String(call[0]).endsWith("/notes"));
+      expect((noteCall?.[1] as { body: string }).body).toContain("advisory");
+    });
+
+    it("folds invalid inline locations and reports them only after the overview exists", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/a.ts", line: 999, message: "Outside diff", severity: "error" }];
+      const onFindingPosted = vi.fn();
+      publication.onFindingPosted = onFindingPosted;
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse(CHANGES_BODY))
+        .mockResolvedValueOnce(jsonResponse({ id: 101 }));
+      const result = await new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication);
+      expect(result.findings).toEqual([{
+        comment: publication.comments[0],
+        url: null,
+        providerThreadId: null,
+        disposition: "folded",
+      }]);
+      expect(onFindingPosted).toHaveBeenCalledOnce();
+      expect(fetchMock.mock.calls.some((call: unknown[]) => String(call[0]).endsWith("/discussions"))).toBe(false);
+    });
+
+    it("does not swallow finding callback failures or post an overview after them", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/a.ts", line: 2, message: "Bug", severity: "error" }];
+      publication.onFindingPosted = vi.fn().mockRejectedValue(new Error("failed to persist finding"));
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse(CHANGES_BODY))
+        .mockResolvedValueOnce(jsonResponse({ id: "discussion-1", notes: [{ id: 77 }] }));
+      await expect(new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication))
+        .rejects.toThrow("failed to persist finding");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("does not treat a transient inline publication failure as a folded finding", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/a.ts", line: 2, message: "Bug", severity: "error" }];
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse(CHANGES_BODY))
+        .mockResolvedValueOnce(jsonResponse({ message: "Server error" }, 500));
+      await expect(new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication))
+        .rejects.toThrow("500");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it.each([
+      ["a newer head", { ...MR_BODY, sha: "newer" }],
+      ["a closed merge request", { ...MR_BODY, state: "closed" }],
+    ])("rejects %s before applying any review effect", async (_label, mr) => {
+      const publication = { ...overviewPublication(), score: -1 as const };
+      publication.comments = [{ file: "src/a.ts", line: 2, message: "Bug", severity: "error" }];
+      fetchMock.mockResolvedValueOnce(jsonResponse(mr));
+      await expect(new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication))
+        .rejects.toThrow(/reviewed revision|no longer open/i);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a publication without a reviewed head revision", async () => {
+      const publication = overviewPublication();
+      publication.details = { ...publication.details, headSha: undefined };
+      await expect(new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication))
+        .rejects.toThrow(/reviewed revision/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does not position inline findings against a diff for another head", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/a.ts", line: 2, message: "Bug", severity: "error" }];
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse({ ...CHANGES_BODY, diff_refs: { ...CHANGES_BODY.diff_refs, head_sha: "newer" } }));
+      await expect(new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication))
+        .rejects.toThrow(/reviewed revision/i);
+      expect(fetchMock.mock.calls.some((call: unknown[]) => String(call[0]).endsWith("/discussions"))).toBe(false);
+    });
+
+    it("positions a renamed-file finding with its original old path", async () => {
+      const publication = overviewPublication();
+      publication.comments = [{ file: "src/new.ts", line: 2, message: "Bug", severity: "error" }];
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(MR_BODY))
+        .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+          project: { mergeRequest: ownReviewers("UNREVIEWED") } } }))
+        .mockResolvedValueOnce(jsonResponse({ ...CHANGES_BODY, changes: [{
+          ...CHANGES_BODY.changes[0], old_path: "src/old.ts", new_path: "src/new.ts", renamed_file: true,
+        }] }))
+        .mockResolvedValueOnce(jsonResponse({ id: "discussion-1", notes: [{ id: 77 }] }))
+        .mockResolvedValueOnce(jsonResponse({ id: 101 }));
+      await new GitLabMergeRequestReviewProvider(config).postReviewOverview(projectCid, 1, publication);
+      const call = fetchMock.mock.calls.find((entry: unknown[]) => String(entry[0]).endsWith("/discussions"));
+      const body = JSON.parse(String((call?.[1] as RequestInit).body)) as { position: Record<string, unknown> };
+      expect(body.position).toMatchObject({ old_path: "src/old.ts", new_path: "src/new.ts", new_line: 2 });
+    });
+  });
+
+  it("legacy review discussions use the original path of a renamed file", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ ...CHANGES_BODY, changes: [{
+        ...CHANGES_BODY.changes[0], old_path: "src/old.ts", new_path: "src/new.ts", renamed_file: true,
+      }] }))
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({}))
+      .mockResolvedValueOnce(jsonResponse({ data: { currentUser: { id: "gid://gitlab/User/9" },
+        project: { mergeRequest: ownReviewers("UNREVIEWED") } } }));
+    await new GitLabMergeRequestReviewProvider(config).postReviewWithComments(
+      projectCid, 1, [{ file: "src/new.ts", line: 2, message: "Bug", severity: "error" }], "Summary", 0,
+    );
+    const call = fetchMock.mock.calls.find((entry: unknown[]) => String(entry[0]).endsWith("/discussions"));
+    const body = JSON.parse(String((call?.[1] as RequestInit).body)) as { position: Record<string, unknown> };
+    expect(body.position).toMatchObject({ old_path: "src/old.ts", new_path: "src/new.ts" });
   });
 
   describe("discussion threads", () => {

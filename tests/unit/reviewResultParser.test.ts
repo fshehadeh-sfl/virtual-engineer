@@ -65,18 +65,73 @@ describe("parseReviewResult", () => {
 
   it("normalizes GitHub review actions without treating COMMENT as a vote", () => {
     const result = parseReviewResult(
-      wrap({ comments: [], summary: "notes only", reviewAction: "COMMENT", replies: [] }),
+      wrap({
+        comments: [],
+        summary: "notes only",
+        changeOverview: "Adds validation.",
+        requiredAction: "",
+        priorFindingAssessments: [],
+        reviewAction: "COMMENT",
+        replies: [],
+      }),
       "github"
     );
     expect(result.score).toBe(0);
+    expect(result.changeOverview).toBe("Adds validation.");
   });
 
   it("normalizes GitLab approval actions", () => {
     const result = parseReviewResult(
-      wrap({ comments: [], summary: "ready", approvalAction: "APPROVE", replies: [] }),
+      wrap({
+        comments: [],
+        summary: "ready",
+        changeOverview: "Updates validation.",
+        requiredAction: "",
+        priorFindingAssessments: [{ findingId: 7, status: "fixed", evidence: "The validator rejects negative values." }],
+        approvalAction: "APPROVE",
+        replies: [],
+      }),
       "gitlab"
     );
     expect(result.score).toBe(1);
+    expect(result.priorFindingAssessments).toEqual([
+      { findingId: 7, status: "fixed", evidence: "The validator rejects negative values." },
+    ]);
+  });
+
+  it("requires an overview and verified finding assessments for hosted reviews", () => {
+    expect(() => parseReviewResult(
+      wrap({ comments: [], summary: "ready", reviewAction: "APPROVE", replies: [] }),
+      "github",
+    )).toThrow(ReviewResultParseError);
+    expect(() => parseReviewResult(
+      wrap({
+        comments: [],
+        summary: "ready",
+        changeOverview: "Adds validation.",
+        requiredAction: "",
+        priorFindingAssessments: [{ findingId: 1, status: "fixed", evidence: "" }],
+        approvalAction: "APPROVE",
+        replies: [],
+      }),
+      "gitlab",
+    )).toThrow(ReviewResultParseError);
+  });
+
+  it("rejects whitespace-only hosted overview and assessment evidence", () => {
+    const hosted = (changeOverview: string, evidence: string): string => wrap({
+      comments: [],
+      summary: "ready",
+      changeOverview,
+      requiredAction: "",
+      priorFindingAssessments: [{ findingId: 1, status: "fixed", evidence }],
+      reviewAction: "APPROVE",
+      replies: [],
+    });
+    expect(() => parseReviewResult(hosted("Adds validation.", " \n\t "), "github"))
+      .toThrow(ReviewResultParseError);
+    expect(() => parseReviewResult(hosted("   ", "The guard was added."), "github"))
+      .toThrow(ReviewResultParseError);
   });
 
   it("rejects a native contract belonging to another integration", () => {

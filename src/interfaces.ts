@@ -885,6 +885,8 @@ export interface ReviewChangeDetails {
   /** Provider-native owner username when available (used by Gerrit self-review guards). */
   ownerUsername?: string | undefined;
   currentPatchset: number;
+  /** Actual head revision when the provider exposes it (patchset numbers are not commit SHAs). */
+  headSha?: string | undefined;
   status: ReviewChangeStatus;
   project: string;
   targetBranch: string;
@@ -896,10 +898,22 @@ export interface ReviewAgentResult {
   comments: InlineReviewComment[];
   /** High-level summary posted alongside the inline comments */
   summary: string;
+  /** Concise description of the change, required by hosted GitHub/GitLab reviews. */
+  changeOverview?: string | undefined;
+  /** One actionable next step for a negative hosted review; empty for other decisions. */
+  requiredAction?: string | undefined;
+  /** Explicit reassessment of previous findings on the current revision. */
+  priorFindingAssessments?: PriorFindingAssessment[] | undefined;
   /** Provider-neutral review decision: negative, neutral, or positive. */
   score: -1 | 0 | 1;
   /** Replies to existing human discussion threads (empty when none). */
   replies: ThreadReply[];
+}
+
+export interface PriorFindingAssessment {
+  findingId: number;
+  status: "still_present" | "fixed" | "uncertain";
+  evidence: string;
 }
 
 /** A single comment inside a discussion thread on a change. */
@@ -952,6 +966,8 @@ export interface PostedReviewComment {
   severity: string;
   /** Provider-side thread/comment id captured for later resolution. */
   providerThreadId: string | null;
+  providerCommentUrl: string | null;
+  disposition: "unknown" | "inline" | "folded";
   resolved: boolean;
   createdAt: Date;
 }
@@ -964,6 +980,43 @@ export interface PostedReviewCommentInput {
   message: string;
   severity: string;
   providerThreadId?: string | null | undefined;
+  providerCommentUrl?: string | null | undefined;
+  disposition?: "inline" | "folded" | undefined;
+}
+
+export interface PublishedReviewFinding {
+  comment: InlineReviewComment;
+  /** Link to the posted inline comment; null for a finding folded into the overview. */
+  url: string | null;
+  providerThreadId: string | null;
+  disposition: "inline" | "folded";
+}
+
+export interface ReviewOverviewPublication {
+  details: ReviewChangeDetails;
+  summary: string;
+  changeOverview: string;
+  requiredAction: string;
+  score: -1 | 0 | 1;
+  /** New findings eligible for inline publication on this pass. */
+  comments: InlineReviewComment[];
+  /** Findings deliberately folded by the orchestrator's volume/severity gate. */
+  folded: InlineReviewComment[];
+  /** Old findings explicitly verified as still present on this revision. */
+  previous: Array<{ comment: InlineReviewComment; url: string | null }>;
+  reReview: boolean;
+  fixedCount?: number | undefined;
+  /** Persist a remote publication identity as soon as it is allocated. */
+  onPublicationCreated?: ((remoteId: string) => Promise<void>) | undefined;
+  /** Persist each successfully published finding before moving to the next effect. */
+  onFindingPosted?: ((finding: PublishedReviewFinding) => Promise<void>) | undefined;
+}
+
+export interface ReviewOverviewPublicationResult {
+  findings: PublishedReviewFinding[];
+  remoteId: string | null;
+  /** True when a negative GitLab verdict did not create a native merge block. */
+  advisoryOnly: boolean;
 }
 
 /** Input shape for recording a reply VE posted to a human discussion thread. */
@@ -1036,6 +1089,14 @@ export interface ReviewProvider {
     allowedFiles?: ReadonlySet<string>,
     signal?: AbortSignal,
   ): Promise<void>;
+
+  /** Post a linked GitHub/GitLab overview; Gerrit keeps its original posting contract. */
+  postReviewOverview?(
+    changeId: ExternalChangeId,
+    revision: number,
+    publication: ReviewOverviewPublication,
+    signal?: AbortSignal,
+  ): Promise<ReviewOverviewPublicationResult>;
 
   /** Apply a normalized review decision (-1, 0, or +1). */
   vote(

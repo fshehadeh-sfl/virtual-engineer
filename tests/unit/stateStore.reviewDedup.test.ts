@@ -94,6 +94,61 @@ describe("SqliteStateStore — review dedup", () => {
       const [updated] = await store.getPostedReviewComments(taskId);
       expect(updated?.resolved).toBe(true);
     });
+
+    it("retains provider links and allows a verified fixed finding to recur", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-repeat"));
+      const changeId = makeExternalChangeId("owner/repo#4");
+      const original = {
+        commentHash: "same-issue",
+        file: "src/a.ts",
+        line: 5,
+        message: "Reject negative amounts.",
+        severity: "error",
+        providerThreadId: "thread-10",
+        providerCommentUrl: "https://github.com/owner/repo/pull/4#discussion_r10",
+        disposition: "inline" as const,
+      };
+      await store.markReviewCommentsPosted(taskId, changeId, [original]);
+      const [first] = await store.getPostedReviewComments(taskId);
+      expect(first?.providerCommentUrl).toBe(original.providerCommentUrl);
+      expect(first?.disposition).toBe("inline");
+      expect((await store.getPostedReviewCommentHashes(taskId)).has("same-issue")).toBe(true);
+
+      await store.markReviewCommentResolved(first!.id);
+      expect((await store.getPostedReviewCommentHashes(taskId)).has("same-issue")).toBe(false);
+
+      await store.markReviewCommentsPosted(taskId, changeId, [{
+        ...original,
+        line: 9,
+        providerThreadId: "thread-11",
+        providerCommentUrl: "https://github.com/owner/repo/pull/4#discussion_r11",
+      }]);
+      const occurrences = await store.getPostedReviewComments(taskId);
+      expect(occurrences).toHaveLength(2);
+      expect(occurrences[0]?.resolved).toBe(true);
+      expect(occurrences[1]?.resolved).toBe(false);
+      expect(occurrences[1]?.providerCommentUrl).toContain("r11");
+      expect((await store.getPostedReviewCommentHashes(taskId)).has("same-issue")).toBe(true);
+    });
+
+    it("records a folded finding without inventing a provider link", async () => {
+      const taskId = makeTaskId(randomUUID());
+      await store.createTask(taskId, makeTicketId("rev-folded"));
+      await store.markReviewCommentsPosted(taskId, makeExternalChangeId("owner/repo#5"), [{
+        commentHash: "folded",
+        file: "src/a.ts",
+        line: 0,
+        message: "File-level finding",
+        severity: "warning",
+        disposition: "folded",
+      }]);
+      expect((await store.getPostedReviewComments(taskId))[0]).toMatchObject({
+        providerCommentUrl: null,
+        providerThreadId: null,
+        disposition: "folded",
+      });
+    });
   });
 
   describe("thread-reply ledger", () => {

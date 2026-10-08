@@ -31,6 +31,19 @@ const SharedPayloadShape = {
   replies: z.array(ReplySchema),
 };
 
+const PriorFindingAssessmentSchema = z.object({
+  findingId: z.number().int().positive(),
+  status: z.enum(["still_present", "fixed", "uncertain"]),
+  evidence: z.string().trim().min(1),
+}).strict();
+
+const HostedPayloadShape = {
+  ...SharedPayloadShape,
+  changeOverview: z.string().trim().min(1),
+  requiredAction: z.string(),
+  priorFindingAssessments: z.array(PriorFindingAssessmentSchema),
+};
+
 const DecisionSchema = z.union([z.literal(-1), z.literal(0), z.literal(1)]);
 
 const GerritPayloadSchema = z.object({
@@ -39,12 +52,12 @@ const GerritPayloadSchema = z.object({
 }).strict();
 
 const GitHubPayloadSchema = z.object({
-  ...SharedPayloadShape,
+  ...HostedPayloadShape,
   reviewAction: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
 }).strict();
 
 const GitLabPayloadSchema = z.object({
-  ...SharedPayloadShape,
+  ...HostedPayloadShape,
   approvalAction: z.enum(["APPROVE", "UNAPPROVE", "COMMENT"]),
 }).strict();
 
@@ -78,6 +91,25 @@ const SHARED_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
   },
 };
 
+const HOSTED_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
+  ...SHARED_JSON_SCHEMA_PROPERTIES,
+  changeOverview: { type: "string", minLength: 1 },
+  requiredAction: { type: "string" },
+  priorFindingAssessments: {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        findingId: { type: "integer", minimum: 1 },
+        status: { type: "string", enum: ["still_present", "fixed", "uncertain"] },
+        evidence: { type: "string", minLength: 1 },
+      },
+      required: ["findingId", "status", "evidence"],
+      additionalProperties: false,
+    },
+  },
+};
+
 const REVIEW_OUTPUT_JSON_SCHEMAS: Record<ReviewOutputContractKind, Record<string, unknown>> = {
   gerrit: {
     type: "object",
@@ -91,19 +123,19 @@ const REVIEW_OUTPUT_JSON_SCHEMAS: Record<ReviewOutputContractKind, Record<string
   github: {
     type: "object",
     properties: {
-      ...SHARED_JSON_SCHEMA_PROPERTIES,
+      ...HOSTED_JSON_SCHEMA_PROPERTIES,
       reviewAction: { type: "string", enum: ["APPROVE", "REQUEST_CHANGES", "COMMENT"] },
     },
-    required: ["comments", "summary", "replies", "reviewAction"],
+    required: ["comments", "summary", "replies", "changeOverview", "requiredAction", "priorFindingAssessments", "reviewAction"],
     additionalProperties: false,
   },
   gitlab: {
     type: "object",
     properties: {
-      ...SHARED_JSON_SCHEMA_PROPERTIES,
+      ...HOSTED_JSON_SCHEMA_PROPERTIES,
       approvalAction: { type: "string", enum: ["APPROVE", "UNAPPROVE", "COMMENT"] },
     },
-    required: ["comments", "summary", "replies", "approvalAction"],
+    required: ["comments", "summary", "replies", "changeOverview", "requiredAction", "priorFindingAssessments", "approvalAction"],
     additionalProperties: false,
   },
 };
@@ -115,6 +147,11 @@ const SHARED_FORMAT = `The JSON object must also contain:
 
 Use 1-based new-side diff line numbers. Use line 0 only for a file-level finding.
 Use severity "error" or "warning" for actionable concerns, and "info" or "nit" for optional notes.`;
+
+const HOSTED_FORMAT = `Also include:
+- "changeOverview": a concise, factual description of what this PR/MR changes, without repeating its title.
+- "requiredAction": one concrete action needed before approval when requesting changes, otherwise an empty string.
+- "priorFindingAssessments": one { "findingId", "status", "evidence" } for every numbered prior finding supplied in the task. Use "still_present", "fixed", or "uncertain". Judge the current code, not the discussion's resolved flag. If unsure, use "uncertain". Do not invent finding IDs.`;
 
 const CONTRACTS: Record<ReviewOutputContractKind, string> = {
   gerrit: `Return exactly one structured result block and no text outside it.
@@ -138,6 +175,9 @@ ${REVIEW_RESULT_START_MARKER}
 {
   "comments": [],
   "summary": "Overall assessment.",
+  "changeOverview": "What changed in this PR.",
+  "requiredAction": "",
+  "priorFindingAssessments": [],
   "reviewAction": "COMMENT",
   "replies": []
 }
@@ -146,13 +186,18 @@ ${REVIEW_RESULT_END_MARKER}
 "reviewAction" is a GitHub review event: "REQUEST_CHANGES", "COMMENT", or "APPROVE".
 GitHub cannot anchor file-level comments; findings with line 0 are folded into the review summary.
 
-${SHARED_FORMAT}`,
+${SHARED_FORMAT}
+
+${HOSTED_FORMAT}`,
   gitlab: `Return exactly one structured result block and no text outside it.
 
 ${REVIEW_RESULT_START_MARKER}
 {
   "comments": [],
   "summary": "Overall assessment.",
+  "changeOverview": "What changed in this merge request.",
+  "requiredAction": "",
+  "priorFindingAssessments": [],
   "approvalAction": "COMMENT",
   "replies": []
 }
@@ -161,7 +206,9 @@ ${REVIEW_RESULT_END_MARKER}
 "approvalAction" is a GitLab approval action: "UNAPPROVE", "COMMENT", or "APPROVE".
 GitLab cannot position file-level comments; findings with line 0 are folded into the review summary.
 
-${SHARED_FORMAT}`,
+${SHARED_FORMAT}
+
+${HOSTED_FORMAT}`,
 };
 
 export function isReviewOutputContractKind(kind: string): kind is ReviewOutputContractKind {
