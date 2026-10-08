@@ -21,6 +21,8 @@ import { sanitizeErrorDetail } from "../utils/redactUrl.js";
 
 const log = getLogger("github-pr-review-provider");
 
+const PENDING_REVIEW_PLACEHOLDER_BODY = "Virtual Engineer review in progress.";
+
 const GitHubPrSchema = z.object({
   number: z.number(),
   state: z.string(),
@@ -401,10 +403,12 @@ export class GitHubReviewProvider implements ReviewProvider {
     }
 
     signal?.throwIfAborted();
+    // GitHub refuses to edit a review whose stored body is empty, so the draft
+    // needs a placeholder until the linked overview replaces it before submit.
     const createdResponse = await this.fetchJson(`${prUrl}/reviews`, {
       method: "POST",
       body: JSON.stringify({
-        body: "",
+        body: PENDING_REVIEW_PLACEHOLDER_BODY,
         commit_id: headSha,
         ...(inline.length > 0 ? {
           comments: inline.map((comment) => ({

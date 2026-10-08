@@ -78,6 +78,7 @@ describe("GitHubReviewProvider", () => {
       ]);
       expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).toBe(controller.signal);
       const pending = JSON.parse((fetchMock.mock.calls[2]?.[1] as RequestInit).body as string);
+      expect(pending.body).toEqual(expect.stringMatching(/\S/));
       expect(pending.comments).toEqual([{ path: finding.file, line: finding.line, body: finding.message, side: "RIGHT" }]);
       expect(result.findings[0]?.url).toBe(`${pr.html_url}#discussion_r91`);
     });
@@ -131,6 +132,9 @@ describe("GitHubReviewProvider", () => {
       const calls = fetchMock.mock.calls;
       const pendingBody = JSON.parse((calls[1]?.[1] as RequestInit).body as string);
       expect(pendingBody.event).toBeUndefined();
+      // GitHub rejects editing a review whose current body is empty, so the
+      // pending draft must be created with a non-empty placeholder.
+      expect(pendingBody.body).toEqual(expect.stringMatching(/\S/));
       expect(pendingBody.commit_id).toBe(headSha);
       expect(pendingBody.comments).toEqual([{ path: "src/a.ts", line: 2, body: "Fix this", side: "RIGHT" }]);
       expect(calls[2]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews/7/comments?per_page=100&page=1");
