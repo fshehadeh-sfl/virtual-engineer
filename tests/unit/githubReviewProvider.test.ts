@@ -64,7 +64,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }));
 
@@ -111,7 +110,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }));
 
@@ -138,15 +136,18 @@ describe("GitHubReviewProvider", () => {
       expect(pendingBody.commit_id).toBe(headSha);
       expect(pendingBody.comments).toEqual([{ path: "src/a.ts", line: 2, body: "Fix this", side: "RIGHT" }]);
       expect(calls[2]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews/7/comments?per_page=100&page=1");
-      const overview = JSON.parse((calls[3]?.[1] as RequestInit).body as string).body as string;
-      expect((calls[3]?.[1] as RequestInit).method).toBe("PUT");
+      expect(calls.some((call) => (call[1] as RequestInit | undefined)?.method === "PUT")).toBe(false);
+      expect(calls[4]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42/reviews/7/events");
+      const submit = JSON.parse((calls[4]?.[1] as RequestInit).body as string) as { body: string; event: string };
+      const overview = submit.body;
       expect(overview).toContain(`[Fix this`);
       expect(overview).toContain(`#discussion_r91`);
       expect(overview).toContain("Outside hunk");
       expect(overview).toContain("File note");
       expect(overview).toContain("🤖 Reviewed by [Virtual Engineer]");
-      expect(calls[4]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42");
-      expect(JSON.parse((calls[5]?.[1] as RequestInit).body as string)).toEqual({ event: "REQUEST_CHANGES" });
+      expect(calls[3]?.[0]).toBe("https://api.github.com/repos/octocat/hello-world/pulls/42");
+      expect(submit.event).toBe("REQUEST_CHANGES");
+      expect(calls).toHaveLength(5);
     });
 
     it("matches duplicated locations by body across paginated responses and includes verified previous links", async () => {
@@ -158,7 +159,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([...page, postedComment(100, second.message)]))
         .mockResolvedValueOnce(jsonResponse([postedComment(101, finding.message)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({}));
       const result = await new GitHubReviewProvider(config).postReviewOverview!(
@@ -170,17 +170,16 @@ describe("GitHubReviewProvider", () => {
       );
       expect(result.findings[0]?.url).toBe(`${pr.html_url}#discussion_r101`);
       expect(result.findings[1]?.url).toBe(`${pr.html_url}#discussion_r100`);
-      const body = JSON.parse((fetchMock.mock.calls[4]?.[1] as RequestInit).body as string).body as string;
+      const body = JSON.parse((fetchMock.mock.calls[5]?.[1] as RequestInit).body as string).body as string;
       expect(body).toContain("Previously reported");
       expect(body).toContain("#discussion_r3");
-      expect(JSON.parse((fetchMock.mock.calls[6]?.[1] as RequestInit).body as string).event).toBe("APPROVE");
+      expect(JSON.parse((fetchMock.mock.calls[5]?.[1] as RequestInit).body as string).event).toBe("APPROVE");
     });
 
     it("posts an empty COMMENT overview without inventing links", async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ id: 8 }))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse({}))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({}));
       const result = await new GitHubReviewProvider(config).postReviewOverview!(
@@ -188,14 +187,13 @@ describe("GitHubReviewProvider", () => {
       );
       expect(result.findings).toEqual([]);
       expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string).comments).toBeUndefined();
-      expect(JSON.parse((fetchMock.mock.calls[4]?.[1] as RequestInit).body as string).event).toBe("COMMENT");
+      expect(JSON.parse((fetchMock.mock.calls[3]?.[1] as RequestInit).body as string).event).toBe("COMMENT");
     });
 
     it("renders verified prior findings without URLs and includes verified fix counts", async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ id: 8 }))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse({}))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({}));
       await new GitHubReviewProvider(config).postReviewOverview!(
@@ -204,7 +202,7 @@ describe("GitHubReviewProvider", () => {
           previous: [{ comment: finding, url: null }],
         }),
       );
-      const body = JSON.parse((fetchMock.mock.calls[2]?.[1] as RequestInit).body as string).body as string;
+      const body = JSON.parse((fetchMock.mock.calls[3]?.[1] as RequestInit).body as string).body as string;
       expect(body).toContain("Previously reported");
       expect(body).toContain("2 verified fixes");
       expect(body).not.toContain("](null)");
@@ -216,7 +214,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 8 }))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse({}))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({}));
       const result = await new GitHubReviewProvider(config).postReviewOverview!(
@@ -237,7 +234,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse([file, ...fileResponse]))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }));
 
@@ -251,7 +247,7 @@ describe("GitHubReviewProvider", () => {
         { comment: finding, url: `${pr.html_url}#discussion_r91`, providerThreadId: "91", disposition: "inline" },
         { comment: binary, url: null, providerThreadId: null, disposition: "folded" },
       ]);
-      const body = JSON.parse((fetchMock.mock.calls[3]?.[1] as RequestInit).body as string).body as string;
+      const body = JSON.parse((fetchMock.mock.calls[4]?.[1] as RequestInit).body as string).body as string;
       expect(body).toContain("Binary asset needs review");
       expect(body).not.toContain("](null)");
     });
@@ -282,7 +278,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([pending(91), pending(92)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }));
 
@@ -322,14 +317,13 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse({ ...pr, state: "closed" }))
         .mockResolvedValueOnce(new Response(null, { status: 204 }));
       await expect(new GitHubReviewProvider(config).postReviewOverview!(
         cid, 1, publication({ comments: [finding, folded], onFindingPosted: posted }),
       )).rejects.toThrow(/deleted.*no longer open/i);
       expect(posted).not.toHaveBeenCalled();
-      expect((fetchMock.mock.calls[5]?.[1] as RequestInit).method).toBe("DELETE");
+      expect((fetchMock.mock.calls[4]?.[1] as RequestInit).method).toBe("DELETE");
     });
 
     it("never records findings if submission request fails and does not delete a potentially submitted review", async () => {
@@ -338,14 +332,13 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(new Response("timeout", { status: 503 }));
       await expect(new GitHubReviewProvider(config).postReviewOverview!(
         cid, 1, publication({ onFindingPosted: posted }),
       )).rejects.toThrow(/outcome unknown/i);
       expect(posted).not.toHaveBeenCalled();
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
     });
 
     it("reports a post-submission ledger failure without deleting the published review", async () => {
@@ -353,7 +346,6 @@ describe("GitHubReviewProvider", () => {
         .mockResolvedValueOnce(jsonResponse(fileResponse))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([postedComment(91)]))
-        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse(pr))
         .mockResolvedValueOnce(jsonResponse({ id: 7 }));
       const callback = vi.fn(async () => { throw new Error("persistence failed"); });
@@ -361,10 +353,10 @@ describe("GitHubReviewProvider", () => {
         cid, 1, publication({ onFindingPosted: callback }),
       )).rejects.toThrow(/submitted.*persistence failed/i);
       expect(callback).toHaveBeenCalledOnce();
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      expect(fetchMock).toHaveBeenCalledTimes(5);
     });
 
-    it("cleans up when updating the overview fails", async () => {
+    it("cleans up when the pre-submit PR check fails", async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([]))
@@ -389,21 +381,19 @@ describe("GitHubReviewProvider", () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse({}))
         .mockResolvedValueOnce(jsonResponse({ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }))
         .mockResolvedValueOnce(new Response(null, { status: 204 }));
       await expect(new GitHubReviewProvider(config).postReviewOverview!(
         cid, 1, publication({ comments: [] }),
       )).rejects.toThrow(/deleted.*reviewed head SHA/);
-      expect((fetchMock.mock.calls[4]?.[1] as RequestInit).method).toBe("DELETE");
-      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
     it("does not submit on a changed head and surfaces failed cleanup", async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({ id: 7 }))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse({}))
         .mockResolvedValueOnce(jsonResponse({ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }))
         .mockResolvedValueOnce(new Response("cleanup failed", { status: 500 }));
       const error = await new GitHubReviewProvider(config).postReviewOverview!(
@@ -411,8 +401,8 @@ describe("GitHubReviewProvider", () => {
       ).catch((failure: unknown) => failure);
       expect(error).toBeInstanceOf(AggregateError);
       expect((error as Error).message).toMatch(/cleanup failed.*draft may remain/i);
-      expect((fetchMock.mock.calls[4]?.[1] as RequestInit).method).toBe("DELETE");
-      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
     });
 
     it("cleans up an aborted pending review and never submits", async () => {

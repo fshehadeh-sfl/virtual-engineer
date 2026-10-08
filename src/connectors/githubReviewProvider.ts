@@ -403,8 +403,7 @@ export class GitHubReviewProvider implements ReviewProvider {
     }
 
     signal?.throwIfAborted();
-    // GitHub refuses to edit a review whose stored body is empty, so the draft
-    // needs a placeholder until the linked overview replaces it before submit.
+    // Keep the draft non-empty; the submit call replaces it with the overview.
     const createdResponse = await this.fetchJson(`${prUrl}/reviews`, {
       method: "POST",
       body: JSON.stringify({
@@ -502,12 +501,6 @@ export class GitHubReviewProvider implements ReviewProvider {
         ],
       });
       signal?.throwIfAborted();
-      await this.fetchJson(`${reviewUrl}`, {
-        method: "PUT",
-        body: JSON.stringify({ body }),
-        ...(signal !== undefined ? { signal } : {}),
-      });
-      signal?.throwIfAborted();
       const current = GitHubPrSchema.parse(await this.fetchJson(
         prUrl, signal !== undefined ? { signal } : undefined,
       ));
@@ -516,9 +509,12 @@ export class GitHubReviewProvider implements ReviewProvider {
       }
       signal?.throwIfAborted();
       submitting = true;
+      // The linked overview is sent with the submit call: editing a pending
+      // review via PUT returns 404 for OAuth integration tokens.
       await this.fetchJson(`${reviewUrl}/events`, {
         method: "POST",
         body: JSON.stringify({
+          body,
           event: publication.score < 0 ? "REQUEST_CHANGES" : publication.score > 0 ? "APPROVE" : "COMMENT",
         }),
         ...(signal !== undefined ? { signal } : {}),
