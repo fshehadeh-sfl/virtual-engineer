@@ -127,6 +127,18 @@ describe("recoverActiveReviews", () => {
     expect(store.transition).not.toHaveBeenCalled();
   });
 
+  it("forwards run options so admin retries can force review publication", async () => {
+    const task = makeTask({ taskId: makeTaskId("review-admin-forced") });
+    const store = makeStore([task]);
+    const runReview = vi.fn(async () => undefined);
+
+    await runReviewTask(store, task, async () => ({ runReview }), { force: true });
+    await runReviewTask(store, task, async () => ({ runReview }));
+
+    expect(runReview).toHaveBeenNthCalledWith(1, task.taskId, { force: true });
+    expect(runReview).toHaveBeenNthCalledWith(2, task.taskId, undefined);
+  });
+
   it("persists an admin-triggered project incompatibility as REVIEW_FAILED", async () => {
     const task = makeTask({ taskId: makeTaskId("review-admin-incompatible") });
     const store = makeStore([task]);

@@ -9,7 +9,7 @@ export interface ReviewRecoveryOrchestrator {
 }
 
 export interface ReviewTaskOrchestrator {
-  runReview(taskId: Task["taskId"]): Promise<void>;
+  runReview(taskId: Task["taskId"], options?: { force?: boolean }): Promise<void>;
 }
 
 type ReviewTaskFailureStore = Pick<StateStore, "getTask" | "setFailureReason" | "transition">;
@@ -44,6 +44,7 @@ export async function runReviewTask(
   store: ReviewTaskFailureStore,
   task: Task,
   buildOrchestrator: (task: Task) => Promise<ReviewTaskOrchestrator | null>,
+  options?: { force?: boolean },
 ): Promise<void> {
   try {
     const orchestrator = await buildOrchestrator(task);
@@ -51,7 +52,7 @@ export async function runReviewTask(
       log.warn({ taskId: task.taskId }, "review task runtime unavailable; task was not routed to code generation");
       return;
     }
-    await orchestrator.runReview(task.taskId);
+    await orchestrator.runReview(task.taskId, options);
   } catch (error: unknown) {
     if (!(error instanceof ProjectReconfigurationIncompatibleError)) throw error;
     await failIncompatibleReviewTask(store, task.taskId, error);
