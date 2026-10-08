@@ -46,7 +46,8 @@ const GitHubPendingCommentListSchema = z.array(z.object({
   id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   html_url: z.string(),
   path: z.string(),
-  line: z.number().int().positive(),
+  // The review comments endpoint does not return `line` for pending reviews.
+  line: z.number().int().positive().nullable().optional(),
   body: z.string(),
 }));
 
@@ -424,7 +425,7 @@ export class GitHubReviewProvider implements ReviewProvider {
       const matched = new Map<number, PublishedReviewFinding>();
       const unmatched = new Map<string, number[]>();
       for (const [index, comment] of inline.entries()) {
-        const key = JSON.stringify([comment.file, comment.line, comment.message]);
+        const key = JSON.stringify([comment.file, comment.message]);
         const indices = unmatched.get(key) ?? [];
         indices.push(index);
         unmatched.set(key, indices);
@@ -437,8 +438,12 @@ export class GitHubReviewProvider implements ReviewProvider {
           signal !== undefined ? { signal } : undefined,
         ));
         for (const comment of comments) {
-          const key = JSON.stringify([comment.path, comment.line, comment.body]);
-          const index = unmatched.get(key)?.shift();
+          // Same-path, same-body comments are returned in submission order;
+          // a returned line must still agree with the requested anchor.
+          const candidates = unmatched.get(JSON.stringify([comment.path, comment.body])) ?? [];
+          const position = candidates.findIndex((candidate) =>
+            comment.line == null || inline[candidate]?.line === comment.line);
+          const index = position < 0 ? undefined : candidates.splice(position, 1)[0];
           if (index === undefined) {
             throw new Error("GitHub pending review returned an unexpected inline comment");
           }

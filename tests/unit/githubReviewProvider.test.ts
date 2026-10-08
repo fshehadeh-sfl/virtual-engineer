@@ -255,7 +255,8 @@ describe("GitHubReviewProvider", () => {
     it.each([
       { name: "missing anchor", response: { ...postedComment(9) as object, html_url: pr.html_url } },
       { name: "wrong body", response: postedComment(9, "unrelated") },
-      { name: "missing line", response: { id: 9, path: "src/a.ts", body: finding.message, html_url: `${pr.html_url}#discussion_r9` } },
+      { name: "wrong line", response: postedComment(9, finding.message, 3) },
+      { name: "wrong path", response: { ...postedComment(9) as object, path: "src/b.ts" } },
     ])("deletes pending review rather than linking a $name", async ({ response }) => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse(fileResponse))
@@ -265,6 +266,30 @@ describe("GitHubReviewProvider", () => {
       await expect(new GitHubReviewProvider(config).postReviewOverview!(cid, 1, publication())).rejects.toThrow();
       expect((fetchMock.mock.calls[3]?.[1] as RequestInit).method).toBe("DELETE");
       expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("links pending comments returned without line numbers, as the GitHub review comments API does", async () => {
+      const second = { ...finding, line: 3 };
+      const pending = (id: number): unknown => ({
+        id, body: finding.message, path: "src/a.ts", position: id - 90, original_position: id - 90,
+        line: undefined, html_url: `${pr.html_url}#discussion_r${id}`,
+      });
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(fileResponse))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse([pending(91), pending(92)]))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }))
+        .mockResolvedValueOnce(jsonResponse(pr))
+        .mockResolvedValueOnce(jsonResponse({ id: 7 }));
+
+      const result = await new GitHubReviewProvider(config).postReviewOverview!(
+        cid, 1, publication({ comments: [finding, second] }),
+      );
+
+      expect(result.findings.map((entry) => [entry.comment.line, entry.url])).toEqual([
+        [2, `${pr.html_url}#discussion_r91`],
+        [3, `${pr.html_url}#discussion_r92`],
+      ]);
     });
 
     it("rejects missing pending review ID without attempting an unsafe submission", async () => {
