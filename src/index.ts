@@ -493,7 +493,7 @@ async function main(): Promise<void> {
                 taskLifecycleCoordinator,
               );
               return bundle.orchestrator;
-            });
+            }, { force: true });
             return;
           }
           await orchestrator.continueTask(taskId);

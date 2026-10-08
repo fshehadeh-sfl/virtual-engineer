@@ -1093,15 +1093,18 @@ export class ReviewOrchestrator {
       const maxReplies = this.deps.maxReviewReplies ?? 20;
       const repliesToPost = selectRepliesToPost(result.replies, threadById, maxReplies);
 
-      // Avoid re-posting an identical verdict on re-reviews. When a pass finds
-      // nothing new to say (no inline comments, no folded notes) and the overall
-      // vote matches the last review cycle, stay silent instead of spamming
-      // another summary + vote notification. This gate is decoupled from
-      // discussion replies: a pending reply is always delivered through its own
-      // path below and never forces the verdict to be re-posted.
+      // Avoid re-posting an identical Gerrit verdict on re-reviews. When a pass
+      // finds nothing new to say (no inline comments, no folded notes) and the
+      // overall vote matches the last review cycle, stay silent instead of
+      // spamming another summary + vote notification. Hosted reviews always
+      // publish: each re-review runs on a new revision (or a manual retry), and
+      // the overview states "no new findings" while relinking still-open ones.
+      // This gate is decoupled from discussion replies: a pending reply is
+      // always delivered through its own path below and never forces the
+      // verdict to be re-posted.
       const hasNothingNew = commentsToPost.length === 0 && folded.length === 0 && fixedFindings.length === 0;
       const previousDecision = await this.getLastReviewDecision(taskId);
-      const skipPosting = shouldSkipReviewPosting({
+      const skipPosting = !hostedReview && shouldSkipReviewPosting({
         force: options?.force === true,
         cycleNumber,
         hasNothingNew,
