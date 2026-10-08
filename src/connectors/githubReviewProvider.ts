@@ -33,6 +33,7 @@ const GitHubPrFileSchema = z.object({
   filename: z.string(),
   status: z.string(),
   patch: z.string().optional(),
+  changes: z.number().int().nonnegative().optional(),
 });
 const GitHubPrFileListSchema = z.array(GitHubPrFileSchema);
 
@@ -42,6 +43,7 @@ const GitHubCompareResponseSchema = z.object({
     filename: z.string(),
     status: z.string(),
     patch: z.string().nullable().optional(),
+    changes: z.number().int().nonnegative().optional(),
   })).default([]),
 });
 
@@ -262,10 +264,7 @@ export class GitHubReviewProvider implements ReviewProvider {
   async getChangeDiff(changeId: ExternalChangeId, patchset?: number, signal?: AbortSignal): Promise<ReviewChangeDiff> {
     const { owner, repo, prNumber } = this.parseChangeId(changeId);
     const files = await this.getPullRequestFiles(owner, repo, prNumber, signal);
-    const missingPatch = files.find((file) => file.patch === undefined);
-    if (missingPatch !== undefined) {
-      throw new Error(`GitHub PR ${owner}/${repo}#${prNumber}: patch unavailable for ${missingPatch.filename}; cannot review an incomplete diff`);
-    }
+    assertTextualPatchesPresent(files, `GitHub PR ${owner}/${repo}#${prNumber}`);
 
     return {
       changeId,
@@ -331,6 +330,7 @@ export class GitHubReviewProvider implements ReviewProvider {
         signal !== undefined ? { signal } : undefined,
       )
     );
+    assertTextualPatchesPresent(compare.files, `GitHub PR ${owner}/${repo}#${prNumber} inter-patchset comparison`);
     const files: ReviewDiffFile[] = compare.files.map((file) => ({
       path: file.filename,
       status: mapFileStatus(file.status),
@@ -746,6 +746,21 @@ function mapFileStatus(status: string): ReviewFileStatus {
     case "removed": return "deleted";
     case "renamed": return "renamed";
     default: return "modified";
+  }
+}
+
+/**
+ * GitHub omits `patch` for binary files and pure renames/mode changes (zero
+ * changed lines) as well as for oversized text diffs. Only the latter makes the
+ * diff incomplete; missing line counts are treated as unknown and rejected.
+ */
+function assertTextualPatchesPresent(
+  files: ReadonlyArray<{ filename: string; patch?: string | null | undefined; changes?: number | undefined }>,
+  context: string,
+): void {
+  const missing = files.find((file) => (file.patch === undefined || file.patch === null) && file.changes !== 0);
+  if (missing !== undefined) {
+    throw new Error(`${context}: patch unavailable for ${missing.filename}; cannot review an incomplete diff`);
   }
 }
 
